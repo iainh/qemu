@@ -97,4 +97,5 @@ arm_common_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
 
 arm_common_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
   'pebble_generic.c',
+  'sf32lb52.c',
 ))

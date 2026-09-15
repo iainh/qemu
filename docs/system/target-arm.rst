@@ -102,6 +102,7 @@ Board-specific documentation
    arm/collie
    arm/sx1
    arm/stellaris
+   arm/sf32lb52
    arm/stm32
    arm/virt
    arm/vmapple
