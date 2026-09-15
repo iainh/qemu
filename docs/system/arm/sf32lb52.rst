@@ -14,7 +14,8 @@ The machine provides:
 - HPSYS and LPSYS SRAM
 - external flash with the PebbleOS slot 0 vector-table alias
 - DWT cycle counter
-- startup clock, eFuse, RTC, TRNG, and basic MPI flash handshakes
+- startup clock, eFuse, RTC, TRNG, watchdog, I2C reset, audio PLL calibration,
+  and basic MPI flash handshakes
 - USART1 connected to the first QEMU serial backend
 
 The LCPU, Bluetooth, display, DMA, and most peripherals are not implemented.

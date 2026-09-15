@@ -21,6 +21,12 @@
 #define TRNG_CTRL          0x5000f000
 #define TRNG_STAT          0x5000f004
 #define TRNG_RAND_NUM0     0x5000f030
+#define WDT1_CCR           0x5009400c
+#define WDT1_SR            0x50094014
+#define I2C2_CR            0x5009d000
+#define AUDCODEC_PLL_CFG0   0x50088080
+#define AUDCODEC_PLL_CAL_CFG 0x500880a4
+#define AUDCODEC_PLL_CAL_RESULT 0x500880a8
 #define HPSYS_AON_ACR      0x500c0010
 #define PMUC_LRC32_CR      0x500ca01c
 #define RTC_ISR            0x500cb00c
@@ -43,6 +49,14 @@
 #define SPI_FLASH_ID       0x1840ef
 #define TRNG_GEN_RAND      (1U << 1)
 #define TRNG_RAND_VALID    (1U << 3)
+#define WDT_CMD_STOP       0x34
+#define WDT_CMD_START      0x76
+#define WDT_SR_ACTIVE      (1U << 1)
+#define I2C_CR_RSTREQ      (1U << 30)
+#define PLL_CFG0_FC_VCO_SHIFT 17
+#define PLL_CAL_EN         (1U << 0)
+#define PLL_CAL_DONE       (1U << 1)
+#define PLL_CAL_LEN        (2000U << 16)
 #define RTC_ISR_RSF        (1U << 7)
 #define RTC_ISR_INITF      (1U << 9)
 #define RTC_ISR_INIT       (1U << 10)
@@ -119,6 +133,29 @@ static void test_startup_handshakes(void)
     g_assert_cmphex(qtest_readl(qts, TRNG_STAT) & TRNG_RAND_VALID, ==,
                     TRNG_RAND_VALID);
     g_assert_cmphex(qtest_readl(qts, TRNG_RAND_NUM0), !=, 0);
+
+    qtest_writel(qts, WDT1_CCR, WDT_CMD_START);
+    g_assert_cmphex(qtest_readl(qts, WDT1_SR) & WDT_SR_ACTIVE, ==,
+                    WDT_SR_ACTIVE);
+    qtest_writel(qts, WDT1_CCR, WDT_CMD_STOP);
+    g_assert_cmphex(qtest_readl(qts, WDT1_SR) & WDT_SR_ACTIVE, ==, 0);
+
+    qtest_writel(qts, I2C2_CR, I2C_CR_RSTREQ);
+    g_assert_cmphex(qtest_readl(qts, I2C2_CR) & I2C_CR_RSTREQ, ==, 0);
+
+    qtest_writel(qts, AUDCODEC_PLL_CFG0, 16 << PLL_CFG0_FC_VCO_SHIFT);
+    qtest_writel(qts, AUDCODEC_PLL_CAL_CFG, PLL_CAL_LEN | PLL_CAL_EN);
+    g_assert_cmphex(qtest_readl(qts, AUDCODEC_PLL_CAL_CFG) & PLL_CAL_DONE,
+                    ==, PLL_CAL_DONE);
+    g_assert_cmphex(qtest_readl(qts, AUDCODEC_PLL_CAL_RESULT), ==,
+                    (2000U << 16) | 2000);
+    qtest_writel(qts, AUDCODEC_PLL_CAL_CFG, 0);
+    g_assert_cmphex(qtest_readl(qts, AUDCODEC_PLL_CAL_CFG) & PLL_CAL_DONE,
+                    ==, 0);
+    qtest_writel(qts, AUDCODEC_PLL_CFG0, 8 << PLL_CFG0_FC_VCO_SHIFT);
+    qtest_writel(qts, AUDCODEC_PLL_CAL_CFG, PLL_CAL_LEN | PLL_CAL_EN);
+    g_assert_cmphex(qtest_readl(qts, AUDCODEC_PLL_CAL_RESULT), ==,
+                    (1800U << 16) | 2000);
 
     qtest_quit(qts);
 }

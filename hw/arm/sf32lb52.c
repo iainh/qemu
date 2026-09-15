@@ -77,6 +77,24 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52MachineState, SF32LB52_MACHINE)
 #define TRNG_CTRL_GEN_RAND_NUM_START  (1U << 1)
 #define TRNG_STAT_SEED_VALID          (1U << 1)
 #define TRNG_STAT_RAND_NUM_VALID      (1U << 3)
+#define WDT1_CCR                      0x09400c
+#define WDT1_SR                       0x094014
+#define WDT_CMD_STOP                  0x34
+#define WDT_CMD_START                 0x76
+#define WDT_SR_ACTIVE                 (1U << 1)
+#define I2C1_CR                       0x09c000
+#define I2C2_CR                       0x09d000
+#define I2C3_CR                       0x09e000
+#define I2C4_CR                       0x09f000
+#define I2C_CR_RSTREQ                 (1U << 30)
+#define AUDCODEC_PLL_CFG0             0x088080
+#define AUDCODEC_PLL_CAL_CFG          0x0880a4
+#define AUDCODEC_PLL_CAL_RESULT       0x0880a8
+#define AUDCODEC_PLL_CFG0_FC_VCO_SHIFT 17
+#define AUDCODEC_PLL_CFG0_FC_VCO_MASK (0x1fU << 17)
+#define AUDCODEC_PLL_CAL_CFG_EN       (1U << 0)
+#define AUDCODEC_PLL_CAL_CFG_DONE     (1U << 1)
+#define AUDCODEC_PLL_CAL_CFG_LEN_SHIFT 16
 #define RTC_ISR                       0x0cb00c
 #define RTC_ISR_RSF                   (1U << 7)
 #define RTC_ISR_INITF                 (1U << 9)
@@ -243,6 +261,35 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
             if (value & TRNG_CTRL_GEN_RAND_NUM_START) {
                 r->regs[TRNG_RAND_NUM0 / 4] = s->rng_state;
                 r->regs[TRNG_STAT / 4] |= TRNG_STAT_RAND_NUM_VALID;
+            }
+            break;
+        case WDT1_CCR:
+            if (value == WDT_CMD_START) {
+                r->regs[WDT1_SR / 4] |= WDT_SR_ACTIVE;
+            } else if (value == WDT_CMD_STOP) {
+                r->regs[WDT1_SR / 4] &= ~WDT_SR_ACTIVE;
+            }
+            break;
+        case I2C1_CR:
+        case I2C2_CR:
+        case I2C3_CR:
+        case I2C4_CR:
+            result &= ~I2C_CR_RSTREQ;
+            break;
+        case AUDCODEC_PLL_CAL_CFG:
+            if (value & AUDCODEC_PLL_CAL_CFG_EN) {
+                uint32_t fc_vco =
+                    (r->regs[AUDCODEC_PLL_CFG0 / 4] &
+                     AUDCODEC_PLL_CFG0_FC_VCO_MASK) >>
+                    AUDCODEC_PLL_CFG0_FC_VCO_SHIFT;
+                uint32_t cal_len = value >> AUDCODEC_PLL_CAL_CFG_LEN_SHIFT;
+                uint32_t pll_count = cal_len * (64 + fc_vco) / 80;
+
+                r->regs[AUDCODEC_PLL_CAL_RESULT / 4] =
+                    (pll_count << 16) | cal_len;
+                result |= AUDCODEC_PLL_CAL_CFG_DONE;
+            } else {
+                result &= ~AUDCODEC_PLL_CAL_CFG_DONE;
             }
             break;
         case HPSYS_RCC_HRCCAL1:
