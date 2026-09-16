@@ -14,16 +14,28 @@
 #define HPSYS_RCC_HRCCAL1  0x50000034
 #define EFUSEC_CR          0x5000c000
 #define EFUSEC_SR          0x5000c008
+#define MPI2_CR            0x50042000
 #define MPI2_DR            0x50042004
 #define MPI2_SR            0x50042010
 #define MPI2_SCR           0x50042014
 #define MPI2_CMDR1         0x50042018
+#define MPI2_AR1           0x5004201c
 #define TRNG_CTRL          0x5000f000
 #define TRNG_STAT          0x5000f004
 #define TRNG_RAND_NUM0     0x5000f030
 #define WDT1_CCR           0x5009400c
 #define WDT1_SR            0x50094014
+#define DMAC1_ISR          0x50081000
+#define DMAC1_IFCR         0x50081004
+#define DMAC1_CCR2         0x5008101c
+#define DMAC1_CNDTR2       0x50081020
+#define DMAC1_CPAR2        0x50081024
+#define DMAC1_CM0AR2       0x50081028
 #define I2C2_CR            0x5009d000
+#define I2C1_BASE          0x5009c000
+#define I2C_TCR            0x04
+#define I2C_SR             0x0c
+#define I2C_DBR            0x10
 #define AUDCODEC_PLL_CFG0   0x50088080
 #define AUDCODEC_PLL_CAL_CFG 0x500880a4
 #define AUDCODEC_PLL_CAL_RESULT 0x500880a8
@@ -45,14 +57,28 @@
 #define EFUSEC_CR_EN       (1U << 0)
 #define EFUSEC_SR_DONE     (1U << 0)
 #define MPI_SR_TCF         (1U << 0)
+#define MPI_SR_SMF         (1U << 3)
+#define MPI_CR_CMD2E       (1U << 16)
+#define MPI_CR_SME2        (1U << 18)
 #define SPI_FLASH_RDID     0x9f
-#define SPI_FLASH_ID       0x1840ef
+#define SPI_FLASH_ID       0x1940c8
+#define SPI_FLASH_QPP      0x32
+#define SPI_FLASH_SE       0x20
 #define TRNG_GEN_RAND      (1U << 1)
 #define TRNG_RAND_VALID    (1U << 3)
 #define WDT_CMD_STOP       0x34
 #define WDT_CMD_START      0x76
 #define WDT_SR_ACTIVE      (1U << 1)
+#define DMAC_CCR_EN        (1U << 0)
+#define DMAC_ISR_GIF2      (1U << 4)
+#define DMAC_ISR_TCIF2     (1U << 5)
 #define I2C_CR_RSTREQ      (1U << 30)
+#define I2C_TCR_TB         (1U << 0)
+#define I2C_TCR_START      (1U << 1)
+#define I2C_TCR_STOP       (1U << 2)
+#define I2C_SR_TE          (1U << 6)
+#define I2C_SR_RF          (1U << 7)
+#define I2C_SR_MSD         (1U << 12)
 #define PLL_CFG0_FC_VCO_SHIFT 17
 #define PLL_CAL_EN         (1U << 0)
 #define PLL_CAL_DONE       (1U << 1)
@@ -123,6 +149,11 @@ static void test_startup_handshakes(void)
     g_assert_cmphex(qtest_readl(qts, MPI2_DR), ==, SPI_FLASH_ID);
     qtest_writel(qts, MPI2_SCR, MPI_SR_TCF);
     g_assert_cmphex(qtest_readl(qts, MPI2_SR) & MPI_SR_TCF, ==, 0);
+    qtest_writel(qts, MPI2_CR, MPI_CR_CMD2E | MPI_CR_SME2);
+    qtest_writel(qts, MPI2_CMDR1, 0x20);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR) & MPI_SR_SMF, ==, MPI_SR_SMF);
+    qtest_writel(qts, MPI2_SCR, MPI_SR_SMF);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR) & MPI_SR_SMF, ==, 0);
 
     qtest_writel(qts, RTC_ISR, RTC_ISR_INIT);
     g_assert_cmphex(qtest_readl(qts, RTC_ISR) &
@@ -172,6 +203,85 @@ static void test_dwt_cycle_counter(void)
     qtest_quit(qts);
 }
 
+static void test_dmac1_channel2(void)
+{
+    QTestState *qts = sf32lb52_start();
+
+    qtest_writel(qts, DMAC1_CNDTR2, 37);
+    qtest_writel(qts, DMAC1_CCR2, DMAC_CCR_EN);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_CNDTR2), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_CCR2) & DMAC_CCR_EN, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_ISR), ==,
+                    DMAC_ISR_GIF2 | DMAC_ISR_TCIF2);
+
+    qtest_writel(qts, DMAC1_IFCR, DMAC_ISR_TCIF2);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_ISR), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_flash_program_and_erase(void)
+{
+    QTestState *qts = sf32lb52_start();
+    const uint32_t flash_offset = 0x1000000;
+
+    qtest_writel(qts, MPI2_AR1, flash_offset);
+    qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_SE);
+    g_assert_cmphex(qtest_readl(qts, 0x12000000 + flash_offset), ==,
+                    0xffffffff);
+
+    qtest_writel(qts, HPSYS_RAM_BASE, 0x5aa53cc3);
+    qtest_writel(qts, DMAC1_CNDTR2, 4);
+    qtest_writel(qts, DMAC1_CPAR2, MPI2_DR);
+    qtest_writel(qts, DMAC1_CM0AR2, HPSYS_RAM_BASE);
+    qtest_writel(qts, DMAC1_CCR2, DMAC_CCR_EN);
+    qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_QPP);
+    g_assert_cmphex(qtest_readl(qts, 0x12000000 + flash_offset), ==,
+                    0x5aa53cc3);
+
+    qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_SE);
+    g_assert_cmphex(qtest_readl(qts, 0x12000000 + flash_offset), ==,
+                    0xffffffff);
+
+    qtest_quit(qts);
+}
+
+static void test_i2c1(void)
+{
+    QTestState *qts = sf32lb52_start();
+    const uint32_t address = 0x58;
+
+    qtest_writel(qts, I2C1_BASE + I2C_DBR, address << 1);
+    qtest_writel(qts, I2C1_BASE + I2C_TCR, I2C_TCR_START | I2C_TCR_TB);
+    g_assert_cmphex(qtest_readl(qts, I2C1_BASE + I2C_SR), ==, I2C_SR_TE);
+    qtest_writel(qts, I2C1_BASE + I2C_SR, I2C_SR_TE);
+
+    qtest_writel(qts, I2C1_BASE + I2C_DBR, 0x20);
+    qtest_writel(qts, I2C1_BASE + I2C_TCR, I2C_TCR_TB);
+    qtest_writel(qts, I2C1_BASE + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, I2C1_BASE + I2C_DBR, 0xa5);
+    qtest_writel(qts, I2C1_BASE + I2C_TCR, I2C_TCR_TB | I2C_TCR_STOP);
+    g_assert_cmphex(qtest_readl(qts, I2C1_BASE + I2C_SR), ==,
+                    I2C_SR_TE | I2C_SR_MSD);
+    qtest_writel(qts, I2C1_BASE + I2C_SR, I2C_SR_TE | I2C_SR_MSD);
+
+    qtest_writel(qts, I2C1_BASE + I2C_DBR, address << 1);
+    qtest_writel(qts, I2C1_BASE + I2C_TCR, I2C_TCR_START | I2C_TCR_TB);
+    qtest_writel(qts, I2C1_BASE + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, I2C1_BASE + I2C_DBR, 0x20);
+    qtest_writel(qts, I2C1_BASE + I2C_TCR, I2C_TCR_TB);
+    qtest_writel(qts, I2C1_BASE + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, I2C1_BASE + I2C_DBR, (address << 1) | 1);
+    qtest_writel(qts, I2C1_BASE + I2C_TCR, I2C_TCR_START | I2C_TCR_TB);
+    qtest_writel(qts, I2C1_BASE + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, I2C1_BASE + I2C_TCR, I2C_TCR_TB | I2C_TCR_STOP);
+    g_assert_cmphex(qtest_readl(qts, I2C1_BASE + I2C_SR), ==,
+                    I2C_SR_RF | I2C_SR_MSD);
+    g_assert_cmphex(qtest_readl(qts, I2C1_BASE + I2C_DBR), ==, 0xa5);
+
+    qtest_quit(qts);
+}
+
 static void test_usart1(void)
 {
     QTestState *qts = sf32lb52_start();
@@ -200,6 +310,10 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/memory", test_memory);
     qtest_add_func("sf32lb52/startup-handshakes", test_startup_handshakes);
     qtest_add_func("sf32lb52/dwt-cycle-counter", test_dwt_cycle_counter);
+    qtest_add_func("sf32lb52/dmac1-channel2", test_dmac1_channel2);
+    qtest_add_func("sf32lb52/flash-program-erase",
+                   test_flash_program_and_erase);
+    qtest_add_func("sf32lb52/i2c1", test_i2c1);
     qtest_add_func("sf32lb52/usart1", test_usart1);
 
     return g_test_run();

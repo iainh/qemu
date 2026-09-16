@@ -15,12 +15,15 @@ The machine provides:
 - external flash with the PebbleOS slot 0 vector-table alias
 - DWT cycle counter
 - startup clock, eFuse, RTC, TRNG, watchdog, I2C reset, audio PLL calibration,
-  and basic MPI flash handshakes
+  and MPI flash handshakes
+- interrupt-driven I2C controllers with generic register-backed slave storage
+- DMAC transfer completion and DMA-backed external flash page programming
+- 4 KiB sector and 32/64 KiB block erase commands
 - USART1 connected to the first QEMU serial backend
 
-The LCPU, Bluetooth, display, DMA, and most peripherals are not implemented.
-Unimplemented peripheral registers retain their values to support incremental
-firmware bring-up.
+The LCPU, Bluetooth, display, DMA data movement outside MPI flash writes, and
+most peripherals are not implemented. Unimplemented peripheral registers
+retain their values to support incremental firmware bring-up.
 
 Booting PebbleOS
 ----------------
