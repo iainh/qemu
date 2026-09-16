@@ -180,7 +180,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define DMAC_CCR_HTIE                 (1U << 2)
 #define DMAC_CCR_DIR                  (1U << 4)
 #define DMAC_CCR_CIRC                 (1U << 5)
+#define DMAC_CCR_PINC                 (1U << 6)
 #define DMAC_CCR_MINC                 (1U << 7)
+#define DMAC_CCR_PSIZE_SHIFT          8
+#define DMAC_CCR_MSIZE_SHIFT          10
+#define DMAC_CCR_SIZE_MASK            3U
+#define DMAC_CCR_MEM2MEM              (1U << 14)
 #define I2C1_CR                       0x09c000
 #define I2C2_CR                       0x09d000
 #define I2C3_CR                       0x09e000
@@ -969,6 +974,35 @@ static void sf32lb52_dmac_stream(void *opaque)
     }
 }
 
+static void sf32lb52_dmac_mem2mem(uint32_t ccr, uint32_t count,
+                                  hwaddr source, hwaddr destination)
+{
+    unsigned int source_size =
+        1U << ((ccr >> DMAC_CCR_PSIZE_SHIFT) & DMAC_CCR_SIZE_MASK);
+    unsigned int destination_size =
+        1U << ((ccr >> DMAC_CCR_MSIZE_SHIFT) & DMAC_CCR_SIZE_MASK);
+
+    if (source_size > sizeof(uint32_t) ||
+        destination_size > sizeof(uint32_t)) {
+        return;
+    }
+
+    for (uint32_t transfer = 0; transfer < count; transfer++) {
+        uint8_t data[sizeof(uint32_t)] = {};
+
+        address_space_read(&address_space_memory, source,
+                           MEMTXATTRS_UNSPECIFIED, data, source_size);
+        address_space_write(&address_space_memory, destination,
+                            MEMTXATTRS_UNSPECIFIED, data, destination_size);
+        if (ccr & DMAC_CCR_PINC) {
+            source += source_size;
+        }
+        if (ccr & DMAC_CCR_MINC) {
+            destination += destination_size;
+        }
+    }
+}
+
 static bool sf32lb52_dmac_write(SF32LB52MachineState *s, uint32_t *regs,
                                 hwaddr offset, uint32_t value,
                                 uint32_t *result)
@@ -1010,6 +1044,11 @@ static bool sf32lb52_dmac_write(SF32LB52MachineState *s, uint32_t *regs,
                               (uint64_t)s->dmac_count[channel] *
                               NANOSECONDS_PER_SECOND / 16000));
             } else {
+                if (value & DMAC_CCR_MEM2MEM) {
+                    sf32lb52_dmac_mem2mem(value, s->dmac_count[channel],
+                                          s->dmac_periph[channel],
+                                          s->dmac_memory[channel]);
+                }
                 regs[DMAC1_ISR / 4] |= 3U << shift;
                 regs[(DMAC1_CNDTR1 +
                       channel * DMAC_CHANNEL_STRIDE) / 4] = 0;

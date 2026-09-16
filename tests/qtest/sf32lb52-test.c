@@ -75,6 +75,10 @@
 #define DMAC1_CNDTR2       0x50081020
 #define DMAC1_CPAR2        0x50081024
 #define DMAC1_CM0AR2       0x50081028
+#define DMAC1_CCR3         0x50081030
+#define DMAC1_CNDTR3       0x50081034
+#define DMAC1_CPAR3        0x50081038
+#define DMAC1_CM0AR3       0x5008103c
 #define DMAC1_CCR5         0x50081058
 #define DMAC1_CNDTR5       0x5008105c
 #define DMAC1_CPAR5        0x50081060
@@ -201,9 +205,15 @@
 #define DMAC_CCR_TCIE      (1U << 1)
 #define DMAC_CCR_HTIE      (1U << 2)
 #define DMAC_CCR_CIRC      (1U << 5)
+#define DMAC_CCR_PINC      (1U << 6)
 #define DMAC_CCR_MINC      (1U << 7)
+#define DMAC_CCR_PSIZE_HALFWORD (1U << 8)
+#define DMAC_CCR_MSIZE_HALFWORD (1U << 10)
+#define DMAC_CCR_MEM2MEM   (1U << 14)
 #define DMAC_ISR_GIF2      (1U << 4)
 #define DMAC_ISR_TCIF2     (1U << 5)
+#define DMAC_ISR_GIF3      (1U << 8)
+#define DMAC_ISR_TCIF3     (1U << 9)
 #define DMAC_ISR_GIF5      (1U << 16)
 #define DMAC_ISR_TCIF5     (1U << 17)
 #define DMAC_ISR_HTIF5     (1U << 18)
@@ -574,6 +584,76 @@ static void test_dmac1_channel2(void)
 
     qtest_writel(qts, DMAC1_IFCR, DMAC_ISR_TCIF2);
     g_assert_cmphex(qtest_readl(qts, DMAC1_ISR), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_dmac1_mem2mem_copy(void)
+{
+    static const uint8_t source[] = {
+        0x31, 0xa7, 0x52, 0xc8, 0x6d, 0x04,
+    };
+    static const uint8_t guarded_destination[] = {
+        0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
+    };
+    uint8_t result[sizeof(guarded_destination)];
+    const uint32_t source_address = HPSYS_RAM_BASE + 0x100;
+    const uint32_t destination_address = HPSYS_RAM_BASE + 0x201;
+    QTestState *qts = sf32lb52_start();
+
+    qtest_bufwrite(qts, source_address, source, sizeof(source));
+    qtest_bufwrite(qts, destination_address - 1, guarded_destination,
+                   sizeof(guarded_destination));
+    qtest_writel(qts, DMAC1_CNDTR3, 3);
+    qtest_writel(qts, DMAC1_CPAR3, source_address);
+    qtest_writel(qts, DMAC1_CM0AR3, destination_address);
+    qtest_writel(qts, DMAC1_CCR3,
+                 DMAC_CCR_EN | DMAC_CCR_PINC | DMAC_CCR_MINC |
+                 DMAC_CCR_PSIZE_HALFWORD | DMAC_CCR_MSIZE_HALFWORD |
+                 DMAC_CCR_MEM2MEM);
+
+    qtest_bufread(qts, destination_address - 1, result, sizeof(result));
+    g_assert_cmphex(result[0], ==, 0xcc);
+    g_assert_cmpmem(result + 1, sizeof(source), source, sizeof(source));
+    g_assert_cmphex(result[7], ==, 0xcc);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_CNDTR3), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_CCR3) & DMAC_CCR_EN, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_ISR) &
+                    (DMAC_ISR_GIF3 | DMAC_ISR_TCIF3), ==,
+                    DMAC_ISR_GIF3 | DMAC_ISR_TCIF3);
+
+    qtest_quit(qts);
+}
+
+static void test_dmac1_mem2mem_fill(void)
+{
+    static const uint8_t guarded_destination[] = {
+        0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,
+    };
+    static const uint8_t expected[] = {
+        0x5a, 0xe3, 0xe3, 0xe3, 0xe3, 0xe3, 0x5a,
+    };
+    uint8_t result[sizeof(expected)];
+    const uint32_t source_address = HPSYS_RAM_BASE + 0x300;
+    const uint32_t destination_address = HPSYS_RAM_BASE + 0x402;
+    QTestState *qts = sf32lb52_start();
+
+    qtest_writeb(qts, source_address, 0xe3);
+    qtest_bufwrite(qts, destination_address - 1, guarded_destination,
+                   sizeof(guarded_destination));
+    qtest_writel(qts, DMAC1_CNDTR3, 5);
+    qtest_writel(qts, DMAC1_CPAR3, source_address);
+    qtest_writel(qts, DMAC1_CM0AR3, destination_address);
+    qtest_writel(qts, DMAC1_CCR3,
+                 DMAC_CCR_EN | DMAC_CCR_MINC | DMAC_CCR_MEM2MEM);
+
+    qtest_bufread(qts, destination_address - 1, result, sizeof(result));
+    g_assert_cmpmem(result, sizeof(result), expected, sizeof(expected));
+    g_assert_cmphex(qtest_readl(qts, DMAC1_CNDTR3), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_CCR3) & DMAC_CCR_EN, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_ISR) &
+                    (DMAC_ISR_GIF3 | DMAC_ISR_TCIF3), ==,
+                    DMAC_ISR_GIF3 | DMAC_ISR_TCIF3);
 
     qtest_quit(qts);
 }
@@ -1386,6 +1466,10 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/pmu-reboot", test_pmu_reboot);
     qtest_add_func("sf32lb52/pmu-power-domains", test_pmu_power_domains);
     qtest_add_func("sf32lb52/dmac1-channel2", test_dmac1_channel2);
+    qtest_add_func("sf32lb52/dmac1-mem2mem-copy",
+                   test_dmac1_mem2mem_copy);
+    qtest_add_func("sf32lb52/dmac1-mem2mem-fill",
+                   test_dmac1_mem2mem_fill);
     qtest_add_func("sf32lb52/audio-dma", test_audio_dma);
     qtest_add_func("sf32lb52/flash-program-erase",
                    test_flash_program_and_erase);
