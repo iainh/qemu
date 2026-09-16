@@ -34,6 +34,28 @@
 #define TRNG_CTRL          0x5000f000
 #define TRNG_STAT          0x5000f004
 #define TRNG_RAND_NUM0     0x5000f030
+#define EPIC_COMMAND       0x50007000
+#define EPIC_STATUS        0x50007004
+#define EPIC_EOF_IRQ       0x50007008
+#define EPIC_SETTING       0x5000700c
+#define EPIC_CANVAS_TL     0x50007010
+#define EPIC_CANVAS_BR     0x50007014
+#define EPIC_CANVAS_BG     0x50007018
+#define EPIC_VL_CFG        0x5000701c
+#define EPIC_VL_TL         0x50007020
+#define EPIC_VL_BR         0x50007024
+#define EPIC_VL_EXTENTS    0x50007028
+#define EPIC_VL_SRC        0x50007030
+#define EPIC_VL_SCALE_H    0x5000703c
+#define EPIC_VL_SCALE_V    0x50007040
+#define EPIC_VL_MISC       0x50007048
+#define EPIC_L0_CFG        0x50007050
+#define EPIC_L0_TL         0x50007054
+#define EPIC_L0_BR         0x50007058
+#define EPIC_L0_SRC        0x50007060
+#define EPIC_AHB_CTRL      0x50007100
+#define EPIC_AHB_MEM       0x50007104
+#define EPIC_AHB_STRIDE    0x50007108
 #define LCDC1_IRQ          0x50008008
 #define LCDC1_SETTING      0x5000800c
 #define LCDC1_CANVAS_TL    0x50008010
@@ -138,6 +160,7 @@
 #define HRCCAL1_CAL_EN     (1U << 30)
 #define HRCCAL1_CAL_DONE   (1U << 31)
 #define RCC_GPTIM2         (1U << 16)
+#define RCC_EPIC           (1U << 6)
 #define RCC_MPI2           (1U << 2)
 #define DLLCR_EN           (1U << 0)
 #define DLLCR_READY        (1U << 31)
@@ -154,6 +177,15 @@
 #define SPI_FLASH_SE       0x20
 #define TRNG_GEN_RAND      (1U << 1)
 #define TRNG_RAND_VALID    (1U << 3)
+#define EPIC_START         (1U << 0)
+#define EPIC_EOF_CAUSE     (1U << 0)
+#define EPIC_EOF_STATUS    (1U << 16)
+#define EPIC_EOF_MASK      (1U << 0)
+#define EPIC_ALPHA_SEL     (1U << 4)
+#define EPIC_ALPHA_BLEND   (1U << 31)
+#define EPIC_ACTIVE        (1U << 30)
+#define EPIC_ALL_BYPASS    (1U << 25)
+#define EPIC_H_MIRROR      (1U << 2)
 #define WDT_CMD_STOP       0x34
 #define WDT_CMD_START      0x76
 #define WDT_SR_ACTIVE      (1U << 1)
@@ -644,6 +676,97 @@ static void test_flash_backing(void)
     unlink(path);
 }
 
+static void test_epic(void)
+{
+    static const uint8_t rgb565[] = {
+        0x00, 0xf8, 0xe0, 0x07,
+        0x1f, 0x00, 0xff, 0xff,
+    };
+    static const uint8_t blue_half_alpha[] = { 0xff, 0x00, 0x00, 0x80 };
+    const uint32_t source = HPSYS_RAM_BASE;
+    const uint32_t output = HPSYS_RAM_BASE + 0x100;
+    QTestState *qts = sf32lb52_start();
+
+    qtest_irq_intercept_in(qts, "/machine/armv7m");
+    qtest_memwrite(qts, source, rgb565, sizeof(rgb565));
+    qtest_writel(qts, EPIC_CANVAS_TL, 0);
+    qtest_writel(qts, EPIC_CANVAS_BR, (1U << 16) | 1);
+    qtest_writel(qts, EPIC_CANVAS_BG, EPIC_ALL_BYPASS);
+    qtest_writel(qts, EPIC_L0_TL, 0);
+    qtest_writel(qts, EPIC_L0_BR, (1U << 16) | 1);
+    qtest_writel(qts, EPIC_L0_SRC, source);
+    qtest_writel(qts, EPIC_L0_CFG,
+                 EPIC_ACTIVE | EPIC_ALPHA_SEL | (255U << 5) | (4U << 16));
+    qtest_writel(qts, EPIC_AHB_CTRL, 0);
+    qtest_writel(qts, EPIC_AHB_MEM, output);
+    qtest_writel(qts, EPIC_AHB_STRIDE, 2);
+    qtest_writel(qts, EPIC_SETTING, EPIC_EOF_MASK);
+    qtest_writel(qts, EPIC_COMMAND, EPIC_START);
+
+    g_assert_cmphex(qtest_readw(qts, output), ==, 0xf800);
+    g_assert_cmphex(qtest_readw(qts, output + 2), ==, 0x07e0);
+    g_assert_cmphex(qtest_readw(qts, output + 6), ==, 0x001f);
+    g_assert_cmphex(qtest_readw(qts, output + 8), ==, 0xffff);
+    g_assert_cmphex(qtest_readl(qts, EPIC_STATUS), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, EPIC_EOF_IRQ), ==,
+                    EPIC_EOF_STATUS | EPIC_EOF_CAUSE);
+    g_assert_true(qtest_get_irq(qts, 62));
+    qtest_writel(qts, EPIC_EOF_IRQ,
+                 EPIC_EOF_STATUS | EPIC_EOF_CAUSE);
+    g_assert_cmphex(qtest_readl(qts, EPIC_EOF_IRQ), ==, 0);
+    g_assert_false(qtest_get_irq(qts, 62));
+
+    qtest_memwrite(qts, source + 0x20, blue_half_alpha,
+                   sizeof(blue_half_alpha));
+    qtest_writel(qts, EPIC_CANVAS_BR, 1);
+    qtest_writel(qts, EPIC_CANVAS_BG, 0);
+    qtest_writel(qts, EPIC_L0_BR, 1);
+    qtest_writel(qts, EPIC_VL_TL, 1);
+    qtest_writel(qts, EPIC_VL_BR, 1);
+    qtest_writel(qts, EPIC_VL_EXTENTS, 0);
+    qtest_writel(qts, EPIC_VL_SRC, source + 0x20);
+    qtest_writel(qts, EPIC_VL_SCALE_H, 1U << 16);
+    qtest_writel(qts, EPIC_VL_SCALE_V, 1U << 16);
+    qtest_writel(qts, EPIC_VL_CFG,
+                 EPIC_ACTIVE | EPIC_ALPHA_BLEND | (255U << 5) |
+                 (4U << 16) | (1U << 13) | 2);
+    qtest_writel(qts, EPIC_AHB_MEM, output + 0x20);
+    qtest_writel(qts, EPIC_AHB_STRIDE, 0);
+    qtest_writel(qts, EPIC_COMMAND, EPIC_START);
+    g_assert_cmphex(qtest_readw(qts, output + 0x20), ==, 0xf800);
+    g_assert_cmphex(qtest_readw(qts, output + 0x22), ==, 0x03ef);
+
+    qtest_writel(qts, EPIC_EOF_IRQ,
+                 EPIC_EOF_STATUS | EPIC_EOF_CAUSE);
+    qtest_writel(qts, EPIC_CANVAS_BG, EPIC_ALL_BYPASS);
+    qtest_writel(qts, EPIC_L0_CFG, 0);
+    qtest_writel(qts, EPIC_VL_TL, 0);
+    qtest_writel(qts, EPIC_VL_BR, 1);
+    qtest_writel(qts, EPIC_VL_EXTENTS, 3U << 16);
+    qtest_writel(qts, EPIC_VL_SRC, source);
+    qtest_writel(qts, EPIC_VL_SCALE_H, 2U << 16);
+    qtest_writel(qts, EPIC_VL_MISC, EPIC_H_MIRROR);
+    qtest_writel(qts, EPIC_VL_CFG,
+                 EPIC_ACTIVE | EPIC_ALPHA_SEL | (255U << 5) | (8U << 16));
+    qtest_writel(qts, EPIC_AHB_MEM, output + 0x40);
+    qtest_writel(qts, EPIC_COMMAND, EPIC_START);
+    g_assert_cmphex(qtest_readw(qts, output + 0x40), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, output + 0x42), ==, 0x07e0);
+
+    qtest_writel(qts, EPIC_EOF_IRQ,
+                 EPIC_EOF_STATUS | EPIC_EOF_CAUSE);
+    qtest_writel(qts, HPSYS_RCC_ECR1, RCC_EPIC);
+    qtest_writew(qts, output + 0x20, 0x1234);
+    qtest_writel(qts, EPIC_COMMAND, EPIC_START);
+    g_assert_cmphex(qtest_readw(qts, output + 0x20), ==, 0x1234);
+    g_assert_cmphex(qtest_readl(qts, EPIC_EOF_IRQ), ==, 0);
+    qtest_writel(qts, HPSYS_RCC_ESR1, RCC_EPIC);
+    qtest_writel(qts, HPSYS_RCC_RSTR1, RCC_EPIC);
+    g_assert_cmphex(qtest_readl(qts, EPIC_L0_CFG), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_lcdc_jdi(void)
 {
     const uint32_t jdi_irq = (1U << 20) | (1U << 4);
@@ -993,6 +1116,7 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/flash-program-erase",
                    test_flash_program_and_erase);
     qtest_add_func("sf32lb52/flash-backing", test_flash_backing);
+    qtest_add_func("sf32lb52/epic", test_epic);
     qtest_add_func("sf32lb52/lcdc-jdi", test_lcdc_jdi);
     qtest_add_func("sf32lb52/i2c1", test_i2c1);
     qtest_add_func("sf32lb52/obelix-i2c-devices", test_obelix_i2c_devices);

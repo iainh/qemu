@@ -55,6 +55,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define SF32LB52_HPSYS_PERIPH_BASE    0x50000000
 #define SF32LB52_USART1_BASE          0x50084000
 #define SF32LB52_USART1_IRQ           59
+#define SF32LB52_EPIC_IRQ             62
 #define SF32LB52_GPTIM2_IRQ           71
 #define SF32LB52_LPTIM1_IRQ           46
 #define SF32LB52_RTC_IRQ              49
@@ -113,6 +114,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define HPSYS_RCC_ECR1                0x000018
 #define HPSYS_RCC_ECR2                0x00001c
 #define HPSYS_RCC_DMAC1               (1U << 0)
+#define HPSYS_RCC_EPIC                (1U << 6)
 #define HPSYS_RCC_LCDC1               (1U << 7)
 #define HPSYS_RCC_GPTIM2              (1U << 16)
 #define HPSYS_RCC_I2C1                (1U << 27)
@@ -331,6 +333,53 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define GPTIM_SR_UIF                  (1U << 0)
 #define GPTIM_EGR_UG                  (1U << 0)
 #define GPTIM_CLOCK_HZ                24000000
+#define EPIC_BASE                     0x007000
+#define EPIC_COMMAND                  (EPIC_BASE + 0x000)
+#define EPIC_STATUS                   (EPIC_BASE + 0x004)
+#define EPIC_EOF_IRQ                  (EPIC_BASE + 0x008)
+#define EPIC_SETTING                  (EPIC_BASE + 0x00c)
+#define EPIC_CANVAS_TL                (EPIC_BASE + 0x010)
+#define EPIC_CANVAS_BR                (EPIC_BASE + 0x014)
+#define EPIC_CANVAS_BG                (EPIC_BASE + 0x018)
+#define EPIC_VL_CFG                   (EPIC_BASE + 0x01c)
+#define EPIC_VL_TL                    (EPIC_BASE + 0x020)
+#define EPIC_VL_BR                    (EPIC_BASE + 0x024)
+#define EPIC_VL_EXTENTS               (EPIC_BASE + 0x028)
+#define EPIC_VL_SRC                   (EPIC_BASE + 0x030)
+#define EPIC_VL_ROT                   (EPIC_BASE + 0x034)
+#define EPIC_VL_SCALE_H               (EPIC_BASE + 0x03c)
+#define EPIC_VL_SCALE_V               (EPIC_BASE + 0x040)
+#define EPIC_VL_FILL                  (EPIC_BASE + 0x044)
+#define EPIC_VL_MISC                  (EPIC_BASE + 0x048)
+#define EPIC_L0_CFG                   (EPIC_BASE + 0x050)
+#define EPIC_L0_TL                    (EPIC_BASE + 0x054)
+#define EPIC_L0_BR                    (EPIC_BASE + 0x058)
+#define EPIC_L0_SRC                   (EPIC_BASE + 0x060)
+#define EPIC_L0_FILL                  (EPIC_BASE + 0x064)
+#define EPIC_AHB_CTRL                 (EPIC_BASE + 0x100)
+#define EPIC_AHB_MEM                  (EPIC_BASE + 0x104)
+#define EPIC_AHB_STRIDE               (EPIC_BASE + 0x108)
+#define EPIC_VL_SCALE_INIT_H          (EPIC_BASE + 0x11c)
+#define EPIC_VL_SCALE_INIT_V          (EPIC_BASE + 0x120)
+#define EPIC_COMMAND_START            (1U << 0)
+#define EPIC_COMMAND_RESET            (1U << 1)
+#define EPIC_EOF_CAUSE                (1U << 0)
+#define EPIC_EOF_STATUS               (1U << 16)
+#define EPIC_SETTING_EOF_MASK         (1U << 0)
+#define EPIC_CFG_FORMAT_MASK          0xf
+#define EPIC_CFG_ALPHA_SEL            (1U << 4)
+#define EPIC_CFG_ALPHA_SHIFT          5
+#define EPIC_CFG_ALPHA_BLEND          (1U << 31)
+#define EPIC_CFG_LINE_BYTES_SHIFT     16
+#define EPIC_CFG_LINE_BYTES_MASK      0x1fff
+#define EPIC_CFG_ACTIVE               (1U << 30)
+#define EPIC_CANVAS_BG_BYPASS         (1U << 24)
+#define EPIC_CANVAS_ALL_BYPASS        (1U << 25)
+#define EPIC_VL_BLEND_DEPTH_SHIFT     13
+#define EPIC_VL_V_MIRROR              (1U << 1)
+#define EPIC_VL_H_MIRROR              (1U << 2)
+#define EPIC_VL_ROT_DEGREES_MASK      (0x1ffU << 2)
+#define EPIC_MAX_COORD                505
 #define LCDC1_BASE                    0x008000
 #define LCDC_IRQ                      (LCDC1_BASE + 0x008)
 #define LCDC_SETTING                  (LCDC1_BASE + 0x00c)
@@ -427,6 +476,7 @@ struct SF32LB52MachineState {
     DeviceState *buttons;
     DeviceState *touch;
     qemu_irq gpio1_irq;
+    qemu_irq epic_irq;
     qemu_irq lcdc_irq;
     qemu_irq gptim2_irq;
     qemu_irq lptim1_irq;
@@ -1050,6 +1100,306 @@ static void sf32lb52_lcdc_copy_framebuffer(SF32LB52MachineState *s)
     }
 }
 
+typedef struct SF32LB52EPICPixel {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+    uint8_t a;
+} SF32LB52EPICPixel;
+
+static unsigned int sf32lb52_epic_pixel_size(uint32_t format)
+{
+    switch (format) {
+    case 0:
+        return 2;
+    case 1:
+    case 3:
+        return 3;
+    case 2:
+        return 4;
+    case 4:
+    case 6:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static bool sf32lb52_epic_read_pixel(SF32LB52MachineState *s,
+                                     uint32_t address, uint32_t format,
+                                     uint32_t fill,
+                                     SF32LB52EPICPixel *pixel)
+{
+    uint8_t data[4];
+    uint16_t rgb565;
+    uint32_t lut;
+    unsigned int size = sf32lb52_epic_pixel_size(format);
+
+    if (!size || address_space_read(&address_space_memory, address,
+                                    MEMTXATTRS_UNSPECIFIED, data,
+                                    size) != MEMTX_OK) {
+        return false;
+    }
+
+    pixel->a = 255;
+    switch (format) {
+    case 0: /* RGB565 */
+        rgb565 = lduw_le_p(data);
+        pixel->r = (rgb565 >> 11) * 255 / 31;
+        pixel->g = (rgb565 >> 5 & 0x3f) * 255 / 63;
+        pixel->b = (rgb565 & 0x1f) * 255 / 31;
+        break;
+    case 1: /* RGB888 */
+        pixel->b = data[0];
+        pixel->g = data[1];
+        pixel->r = data[2];
+        break;
+    case 2: /* ARGB8888 */
+        pixel->b = data[0];
+        pixel->g = data[1];
+        pixel->r = data[2];
+        pixel->a = data[3];
+        break;
+    case 3: /* ARGB8565 */
+        rgb565 = lduw_le_p(data);
+        pixel->r = (rgb565 >> 11) * 255 / 31;
+        pixel->g = (rgb565 >> 5 & 0x3f) * 255 / 63;
+        pixel->b = (rgb565 & 0x1f) * 255 / 31;
+        pixel->a = data[2];
+        break;
+    case 4: /* A8 */
+        pixel->r = fill >> 16;
+        pixel->g = fill >> 8;
+        pixel->b = fill;
+        pixel->a = data[0];
+        break;
+    case 6: /* L8 */
+        lut = s->hpsys_periph.regs[(EPIC_BASE + 0x400) / 4 + data[0]];
+        pixel->b = lut;
+        pixel->g = lut >> 8;
+        pixel->r = lut >> 16;
+        pixel->a = lut >> 24;
+        break;
+    default:
+        return false;
+    }
+    return true;
+}
+
+static void sf32lb52_epic_blend(SF32LB52EPICPixel *dst,
+                                SF32LB52EPICPixel src, uint32_t cfg,
+                                bool bypass)
+{
+    uint32_t alpha = cfg >> EPIC_CFG_ALPHA_SHIFT & 0xff;
+    uint32_t dst_alpha = dst->a;
+    uint32_t out_alpha;
+
+    if (cfg & EPIC_CFG_ALPHA_SEL) {
+        src.a = alpha;
+    } else if (cfg & EPIC_CFG_ALPHA_BLEND) {
+        src.a = (src.a * alpha + 127) / 255;
+    }
+    if (bypass) {
+        *dst = src;
+        return;
+    }
+
+    out_alpha = src.a + (dst_alpha * (255 - src.a) + 127) / 255;
+    if (!out_alpha) {
+        memset(dst, 0, sizeof(*dst));
+        return;
+    }
+    dst->r = ((uint32_t)src.r * src.a * 255 +
+              (uint32_t)dst->r * dst_alpha * (255 - src.a) +
+              out_alpha * 127) / (out_alpha * 255);
+    dst->g = ((uint32_t)src.g * src.a * 255 +
+              (uint32_t)dst->g * dst_alpha * (255 - src.a) +
+              out_alpha * 127) / (out_alpha * 255);
+    dst->b = ((uint32_t)src.b * src.a * 255 +
+              (uint32_t)dst->b * dst_alpha * (255 - src.a) +
+              out_alpha * 127) / (out_alpha * 255);
+    dst->a = out_alpha;
+}
+
+static void sf32lb52_epic_layer(SF32LB52MachineState *s,
+                                SF32LB52EPICPixel *canvas,
+                                unsigned int canvas_width,
+                                unsigned int canvas_height, hwaddr cfg_reg,
+                                hwaddr tl_reg, hwaddr br_reg,
+                                hwaddr src_reg, hwaddr fill_reg, bool video,
+                                bool bypass)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+    uint32_t cfg = regs[cfg_reg / 4];
+    uint32_t tl = regs[tl_reg / 4];
+    uint32_t br = regs[br_reg / 4];
+    uint32_t canvas_tl = regs[EPIC_CANVAS_TL / 4];
+    uint32_t x0 = tl & 0x3ff;
+    uint32_t y0 = tl >> 16 & 0x3ff;
+    uint32_t x1 = br & 0x3ff;
+    uint32_t y1 = br >> 16 & 0x3ff;
+    uint32_t canvas_x = canvas_tl & 0x3ff;
+    uint32_t canvas_y = canvas_tl >> 16 & 0x3ff;
+    uint32_t line_bytes = cfg >> EPIC_CFG_LINE_BYTES_SHIFT &
+                          EPIC_CFG_LINE_BYTES_MASK;
+    uint32_t format = cfg & EPIC_CFG_FORMAT_MASK;
+    unsigned int pixel_size = sf32lb52_epic_pixel_size(format);
+
+    if (!(cfg & EPIC_CFG_ACTIVE) || !pixel_size || x1 < x0 || y1 < y0) {
+        return;
+    }
+    if (video && (regs[EPIC_VL_ROT / 4] & EPIC_VL_ROT_DEGREES_MASK)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sf32lb52: EPIC arbitrary rotation is unsupported\n");
+        return;
+    }
+
+    for (uint32_t y = MAX(y0, canvas_y);
+         y <= MIN(y1, canvas_y + canvas_height - 1); y++) {
+        for (uint32_t x = MAX(x0, canvas_x);
+             x <= MIN(x1, canvas_x + canvas_width - 1); x++) {
+            uint32_t source_x = x - x0;
+            uint32_t source_y = y - y0;
+            SF32LB52EPICPixel pixel;
+            uint32_t address;
+
+            if (video) {
+                uint32_t pitch_x = regs[EPIC_VL_SCALE_H / 4] & 0x3ffffff;
+                uint32_t pitch_y = regs[EPIC_VL_SCALE_V / 4] & 0x3ffffff;
+                uint32_t max_x = regs[EPIC_VL_EXTENTS / 4] >> 16 & 0x3ff;
+                uint32_t max_y = regs[EPIC_VL_EXTENTS / 4] & 0x3ff;
+
+                pitch_x = pitch_x ? pitch_x : 1U << 16;
+                pitch_y = pitch_y ? pitch_y : 1U << 16;
+                source_x = ((uint64_t)source_x * pitch_x +
+                            regs[EPIC_VL_SCALE_INIT_H / 4]) >> 16;
+                source_y = ((uint64_t)source_y * pitch_y +
+                            regs[EPIC_VL_SCALE_INIT_V / 4]) >> 16;
+                if (regs[EPIC_VL_MISC / 4] & EPIC_VL_H_MIRROR) {
+                    source_x = max_x - MIN(source_x, max_x);
+                }
+                if (regs[EPIC_VL_MISC / 4] & EPIC_VL_V_MIRROR) {
+                    source_y = max_y - MIN(source_y, max_y);
+                }
+                if (source_x > max_x || source_y > max_y) {
+                    continue;
+                }
+            }
+            address = regs[src_reg / 4] + source_y * line_bytes +
+                      source_x * pixel_size;
+            if (sf32lb52_epic_read_pixel(s, address, format,
+                                         regs[fill_reg / 4], &pixel)) {
+                sf32lb52_epic_blend(
+                    &canvas[(y - canvas_y) * canvas_width + x - canvas_x],
+                    pixel, cfg, bypass);
+            }
+        }
+    }
+}
+
+static void sf32lb52_epic_run(SF32LB52MachineState *s)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+    uint32_t tl = regs[EPIC_CANVAS_TL / 4];
+    uint32_t br = regs[EPIC_CANVAS_BR / 4];
+    uint32_t bg = regs[EPIC_CANVAS_BG / 4];
+    uint32_t x0 = tl & 0x3ff;
+    uint32_t y0 = tl >> 16 & 0x3ff;
+    uint32_t x1 = br & 0x3ff;
+    uint32_t y1 = br >> 16 & 0x3ff;
+    uint32_t output_format = regs[EPIC_AHB_CTRL / 4] >> 1 & 3;
+    unsigned int output_size = sf32lb52_epic_pixel_size(output_format);
+    g_autofree SF32LB52EPICPixel *canvas = NULL;
+    g_autofree uint8_t *row = NULL;
+    uint32_t width;
+    uint32_t height;
+    bool bypass = bg & EPIC_CANVAS_ALL_BYPASS;
+
+    if (x1 < x0 || y1 < y0 || x1 > EPIC_MAX_COORD ||
+        y1 > EPIC_MAX_COORD || !output_size ||
+        (regs[EPIC_AHB_CTRL / 4] & 1)) {
+        goto complete;
+    }
+    width = x1 - x0 + 1;
+    height = y1 - y0 + 1;
+    canvas = g_new(SF32LB52EPICPixel, width * height);
+    for (uint32_t i = 0; i < width * height; i++) {
+        canvas[i].r = bg >> 16;
+        canvas[i].g = bg >> 8;
+        canvas[i].b = bg;
+        canvas[i].a = (bg & EPIC_CANVAS_BG_BYPASS) ? 0 : 255;
+    }
+
+    if ((regs[EPIC_VL_CFG / 4] >> EPIC_VL_BLEND_DEPTH_SHIFT & 3) == 0) {
+        sf32lb52_epic_layer(s, canvas, width, height, EPIC_VL_CFG,
+                            EPIC_VL_TL, EPIC_VL_BR, EPIC_VL_SRC,
+                            EPIC_VL_FILL, true, bypass);
+    }
+    sf32lb52_epic_layer(s, canvas, width, height, EPIC_L0_CFG,
+                        EPIC_L0_TL, EPIC_L0_BR, EPIC_L0_SRC,
+                        EPIC_L0_FILL, false, bypass);
+    if ((regs[EPIC_VL_CFG / 4] >> EPIC_VL_BLEND_DEPTH_SHIFT & 3) != 0) {
+        sf32lb52_epic_layer(s, canvas, width, height, EPIC_VL_CFG,
+                            EPIC_VL_TL, EPIC_VL_BR, EPIC_VL_SRC,
+                            EPIC_VL_FILL, true, bypass);
+    }
+
+    row = g_malloc(width * output_size);
+    for (uint32_t y = 0; y < height; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            SF32LB52EPICPixel pixel = canvas[y * width + x];
+            uint8_t *p = row + x * output_size;
+            uint16_t rgb565;
+
+            switch (output_format) {
+            case 0:
+                rgb565 = (pixel.r * 31 / 255) << 11 |
+                         (pixel.g * 63 / 255) << 5 |
+                         pixel.b * 31 / 255;
+                stw_le_p(p, rgb565);
+                break;
+            case 1:
+                p[0] = pixel.b;
+                p[1] = pixel.g;
+                p[2] = pixel.r;
+                break;
+            case 2:
+                p[0] = pixel.b;
+                p[1] = pixel.g;
+                p[2] = pixel.r;
+                p[3] = pixel.a;
+                break;
+            case 3:
+                rgb565 = (pixel.r * 31 / 255) << 11 |
+                         (pixel.g * 63 / 255) << 5 |
+                         pixel.b * 31 / 255;
+                stw_le_p(p, rgb565);
+                p[2] = pixel.a;
+                break;
+            }
+        }
+        address_space_write(&address_space_memory,
+                            regs[EPIC_AHB_MEM / 4] +
+                            y * (width * output_size +
+                                 (regs[EPIC_AHB_STRIDE / 4] & 0xffff)),
+                            MEMTXATTRS_UNSPECIFIED, row, width * output_size);
+    }
+
+complete:
+    regs[EPIC_STATUS / 4] = 0;
+    regs[EPIC_EOF_IRQ / 4] |= EPIC_EOF_STATUS;
+    if (regs[EPIC_SETTING / 4] & EPIC_SETTING_EOF_MASK) {
+        regs[EPIC_EOF_IRQ / 4] |= EPIC_EOF_CAUSE;
+        qemu_irq_raise(s->epic_irq);
+    }
+}
+
+static void sf32lb52_epic_reset(SF32LB52MachineState *s)
+{
+    memset(&s->hpsys_periph.regs[EPIC_BASE / 4], 0, 0x200);
+    qemu_irq_lower(s->epic_irq);
+}
+
 static void sf32lb52_flash_command(SF32LB52MachineState *s, uint32_t command,
                                    uint32_t address)
 {
@@ -1655,6 +2005,9 @@ static void sf32lb52_rcc_reset_modules(SF32LB52MachineState *s,
                 qemu_irq_lower(s->dmac1_irq[channel]);
             }
         }
+        if (reset & HPSYS_RCC_EPIC) {
+            sf32lb52_epic_reset(s);
+        }
         if (reset & HPSYS_RCC_LCDC1) {
             memset(&regs[LCDC1_BASE / 4], 0, 0x100);
             timer_del(s->lcdc_timer);
@@ -1871,6 +2224,21 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
             }
         }
         switch (offset) {
+        case EPIC_COMMAND:
+            if (value & EPIC_COMMAND_RESET) {
+                sf32lb52_epic_reset(s);
+            } else if ((value & EPIC_COMMAND_START) &&
+                       sf32lb52_hpsys_clock_enabled(s, 1,
+                                                    HPSYS_RCC_EPIC)) {
+                sf32lb52_epic_run(s);
+            }
+            return;
+        case EPIC_EOF_IRQ:
+            r->regs[offset / 4] &= ~value;
+            if (!(r->regs[offset / 4] & EPIC_EOF_CAUSE)) {
+                qemu_irq_lower(s->epic_irq);
+            }
+            return;
         case PMUC_CR:
             r->regs[offset / 4] = value;
             if (value & PMUC_CR_REBOOT) {
@@ -2134,6 +2502,7 @@ static void sf32lb52_reset(void *opaque)
         timer_del(s->dmac_timer[channel]);
         qemu_irq_lower(s->dmac1_irq[channel]);
     }
+    qemu_irq_lower(s->epic_irq);
     qemu_irq_lower(s->lcdc_irq);
     qemu_irq_lower(s->gptim2_irq);
     qemu_irq_lower(s->lptim1_irq);
@@ -2345,6 +2714,7 @@ static void sf32lb52_machine_init(MachineState *machine)
         s->i2c[i].irq = qdev_get_gpio_in(armv7m, i2c_irq[i]);
     }
     s->gpio1_irq = qdev_get_gpio_in(armv7m, SF32LB52_GPIO1_IRQ);
+    s->epic_irq = qdev_get_gpio_in(armv7m, SF32LB52_EPIC_IRQ);
     s->lcdc_irq = qdev_get_gpio_in(armv7m, SF32LB52_LCDC1_IRQ);
     s->gptim2_irq = qdev_get_gpio_in(armv7m, SF32LB52_GPTIM2_IRQ);
     s->lptim1_irq = qdev_get_gpio_in(armv7m, SF32LB52_LPTIM1_IRQ);
