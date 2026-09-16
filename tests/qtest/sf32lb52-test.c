@@ -33,7 +33,10 @@
 #define DMAC1_CM0AR2       0x50081028
 #define I2C2_CR            0x5009d000
 #define I2C1_BASE          0x5009c000
+#define I2C2_BASE          0x5009d000
+#define I2C3_BASE          0x5009e000
 #define I2C_TCR            0x04
+#define I2C_IER            0x08
 #define I2C_SR             0x0c
 #define I2C_DBR            0x10
 #define AUDCODEC_PLL_CFG0   0x50088080
@@ -282,6 +285,59 @@ static void test_i2c1(void)
     qtest_quit(qts);
 }
 
+static uint8_t i2c_read_register(QTestState *qts, uint32_t base,
+                                 uint8_t address, uint8_t reg)
+{
+    qtest_writel(qts, base + I2C_DBR, address << 1);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_START | I2C_TCR_TB);
+    qtest_writel(qts, base + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, base + I2C_DBR, reg);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_TB);
+    qtest_writel(qts, base + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, base + I2C_DBR, (address << 1) | 1);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_START | I2C_TCR_TB);
+    qtest_writel(qts, base + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, base, 0x10d);
+    qtest_writel(qts, base + I2C_IER, I2C_SR_RF | I2C_SR_MSD);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_TB | I2C_TCR_STOP);
+
+    return qtest_readl(qts, base + I2C_DBR);
+}
+
+static void i2c_write_register(QTestState *qts, uint32_t base,
+                               uint8_t address, uint8_t reg, uint8_t data)
+{
+    qtest_writel(qts, base + I2C_DBR, address << 1);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_START | I2C_TCR_TB);
+    qtest_writel(qts, base + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, base + I2C_DBR, reg);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_TB);
+    qtest_writel(qts, base + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, base + I2C_DBR, data);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_TB | I2C_TCR_STOP);
+}
+
+static void test_obelix_i2c_devices(void)
+{
+    QTestState *qts = sf32lb52_start();
+
+    g_assert_cmphex(i2c_read_register(qts, I2C1_BASE, 0x64, 0x00), ==,
+                    0x09);
+    g_assert_cmphex(i2c_read_register(qts, I2C1_BASE, 0x48, 0x3e), ==,
+                    0xe5);
+    g_assert_cmphex(i2c_read_register(qts, I2C2_BASE, 0x6a, 0x0f), ==,
+                    0x6c);
+    g_assert_cmphex(i2c_read_register(qts, I2C2_BASE, 0x30, 0x39), ==,
+                    0x10);
+    g_assert_cmphex(i2c_read_register(qts, I2C3_BASE, 0x15, 0xa9), ==,
+                    0x07);
+
+    i2c_write_register(qts, I2C2_BASE, 0x6a, 0x12, 0x01);
+    g_assert_cmphex(i2c_read_register(qts, I2C2_BASE, 0x6a, 0x12), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_usart1(void)
 {
     QTestState *qts = sf32lb52_start();
@@ -314,6 +370,7 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/flash-program-erase",
                    test_flash_program_and_erase);
     qtest_add_func("sf32lb52/i2c1", test_i2c1);
+    qtest_add_func("sf32lb52/obelix-i2c-devices", test_obelix_i2c_devices);
     qtest_add_func("sf32lb52/usart1", test_usart1);
 
     return g_test_run();

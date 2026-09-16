@@ -118,6 +118,32 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52MachineState, SF32LB52_MACHINE)
 #define I2C_SR_TE                     (1U << 6)
 #define I2C_SR_RF                     (1U << 7)
 #define I2C_SR_MSD                    (1U << 12)
+#define AW2016_ADDRESS                0x64
+#define AW2016_CHIP_ID_REG            0x00
+#define AW2016_CHIP_ID                0x09
+#define W1160_ADDRESS                 0x48
+#define W1160_FLAG1_REG               0x10
+#define W1160_FLAG_ALS_READY          (1U << 7)
+#define W1160_DATA1_ALS_REG           0x13
+#define W1160_DATA2_ALS_REG           0x14
+#define W1160_CHIP_ID_REG             0x3e
+#define W1160_CHIP_ID                 0xe5
+#define LSM6DSO_ADDRESS               0x6a
+#define LSM6DSO_WHO_AM_I_REG          0x0f
+#define LSM6DSO_WHO_AM_I              0x6c
+#define LSM6DSO_CTRL3_C_REG           0x12
+#define LSM6DSO_SW_RESET              (1U << 0)
+#define MMC5603_ADDRESS               0x30
+#define MMC5603_STATUS1_REG           0x18
+#define MMC5603_MEAS_READY            (1U << 6)
+#define MMC5603_OTP_READY             (1U << 4)
+#define MMC5603_WHO_AM_I_REG          0x39
+#define MMC5603_WHO_AM_I              0x10
+#define CST816_ADDRESS                0x15
+#define CST816_CHIP_ID_REG            0xa7
+#define CST816_CHIP_ID                0xb6
+#define CST816_FW_VERSION_REG         0xa9
+#define CST816_FW_VERSION             0x07
 #define AUDCODEC_PLL_CFG0             0x088080
 #define AUDCODEC_PLL_CAL_CFG          0x0880a4
 #define AUDCODEC_PLL_CAL_RESULT       0x0880a8
@@ -241,8 +267,18 @@ static void sf32lb52_i2c_transfer(SF32LB52MachineState *s, int index,
         i2c->reg = regs[(base + I2C_DBR) / 4];
         i2c->have_reg = true;
     } else if (i2c->addressed) {
-        i2c->data[i2c->address][i2c->reg++] =
-            regs[(base + I2C_DBR) / 4];
+        uint8_t reg = i2c->reg++;
+        uint8_t data = regs[(base + I2C_DBR) / 4];
+
+        if (index == 0 && i2c->address == AW2016_ADDRESS &&
+            reg == AW2016_CHIP_ID_REG) {
+            data = AW2016_CHIP_ID;
+        } else if (index == 1 && i2c->address == LSM6DSO_ADDRESS &&
+                   reg == LSM6DSO_CTRL3_C_REG &&
+                   (data & LSM6DSO_SW_RESET)) {
+            data &= ~LSM6DSO_SW_RESET;
+        }
+        i2c->data[i2c->address][reg] = data;
     }
     if (value & I2C_TCR_STOP) {
         status |= I2C_SR_MSD;
@@ -525,8 +561,10 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
         case I2C3_CR:
         case I2C4_CR:
             result &= ~I2C_CR_RSTREQ;
-            s->i2c[i2c_index].addressed = false;
-            s->i2c[i2c_index].have_reg = false;
+            if (value & I2C_CR_RSTREQ) {
+                s->i2c[i2c_index].addressed = false;
+                s->i2c[i2c_index].have_reg = false;
+            }
             break;
         case AUDCODEC_PLL_CAL_CFG:
             if (value & AUDCODEC_PLL_CAL_CFG_EN) {
@@ -599,6 +637,20 @@ static void sf32lb52_reset(void *opaque)
         memset(s->i2c[i].data, 0, sizeof(s->i2c[i].data));
         qemu_irq_lower(s->i2c[i].irq);
     }
+    s->i2c[0].data[AW2016_ADDRESS][AW2016_CHIP_ID_REG] = AW2016_CHIP_ID;
+    s->i2c[0].data[W1160_ADDRESS][W1160_CHIP_ID_REG] = W1160_CHIP_ID;
+    s->i2c[0].data[W1160_ADDRESS][W1160_FLAG1_REG] = W1160_FLAG_ALS_READY;
+    s->i2c[0].data[W1160_ADDRESS][W1160_DATA1_ALS_REG] = 0x04;
+    s->i2c[0].data[W1160_ADDRESS][W1160_DATA2_ALS_REG] = 0x00;
+    s->i2c[1].data[LSM6DSO_ADDRESS][LSM6DSO_WHO_AM_I_REG] =
+        LSM6DSO_WHO_AM_I;
+    s->i2c[1].data[MMC5603_ADDRESS][MMC5603_STATUS1_REG] =
+        MMC5603_MEAS_READY | MMC5603_OTP_READY;
+    s->i2c[1].data[MMC5603_ADDRESS][MMC5603_WHO_AM_I_REG] =
+        MMC5603_WHO_AM_I;
+    s->i2c[2].data[CST816_ADDRESS][CST816_CHIP_ID_REG] = CST816_CHIP_ID;
+    s->i2c[2].data[CST816_ADDRESS][CST816_FW_VERSION_REG] =
+        CST816_FW_VERSION;
     s->hpsys_periph.regs[HPSYS_RCC_HRCCAL2 / 4] = 0x40004000;
     s->hpsys_periph.regs[HPSYS_AON_ACR / 4] =
         HPSYS_AON_ACR_HRC48_REQ | HPSYS_AON_ACR_HRC48_RDY;
