@@ -385,8 +385,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define LCDC_SETTING                  (LCDC1_BASE + 0x00c)
 #define LCDC_CANVAS_TL_POS            (LCDC1_BASE + 0x010)
 #define LCDC_CANVAS_BR_POS            (LCDC1_BASE + 0x014)
+#define LCDC_LAYER0_CONFIG            (LCDC1_BASE + 0x01c)
 #define LCDC_LAYER0_SRC               (LCDC1_BASE + 0x02c)
 #define LCDC_JDI_PAR_CTRL             (LCDC1_BASE + 0x0ec)
+#define LCDC_LAYER0_FORMAT_MASK       0x7
+#define LCDC_LAYER0_FORMAT_RGB565     0
+#define LCDC_LAYER0_FORMAT_RGB332     4
 #define LCDC_JDI_PAR_CTRL_ENABLE      (1U << 0)
 #define LCDC_IRQ_EOF_STAT             (1U << 0)
 #define LCDC_IRQ_JDI_STAT             (1U << 4)
@@ -1075,25 +1079,47 @@ static void sf32lb52_lcdc_copy_framebuffer(SF32LB52MachineState *s)
     uint32_t width = (br & 0x7ff) - x + 1;
     uint32_t doubled_height = ((br >> 16) & 0x7ff) - y + 1;
     uint32_t source = regs[LCDC_LAYER0_SRC / 4];
-    g_autofree uint8_t *pixels = NULL;
+    uint32_t format = regs[LCDC_LAYER0_CONFIG / 4] &
+                      LCDC_LAYER0_FORMAT_MASK;
+    uint32_t height = doubled_height / 2;
+    uint32_t pixel_count = width * height;
+    uint32_t source_length = pixel_count;
+    g_autofree uint8_t *source_pixels = NULL;
+    g_autofree uint8_t *converted_pixels = NULL;
+    uint8_t *pixels;
 
     if (x >= 200 || y >= 228 || width > 200 - x ||
-        doubled_height < 2 || doubled_height / 2 > 228 - y) {
+        doubled_height < 2 || height > 228 - y) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sf32lb52: invalid LCDC rectangle %u,%u %ux%u\n",
-                      x, y, width, doubled_height / 2);
+                      x, y, width, height);
         return;
     }
-    pixels = g_malloc(width * doubled_height / 2);
+    if (format == LCDC_LAYER0_FORMAT_RGB565) {
+        source_length *= 2;
+    }
+    source_pixels = g_malloc(source_length);
     if (address_space_read(&address_space_memory, source,
-                           MEMTXATTRS_UNSPECIFIED, pixels,
-                           width * doubled_height / 2) != MEMTX_OK) {
+                           MEMTXATTRS_UNSPECIFIED, source_pixels,
+                           source_length) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sf32lb52: LCDC source read failed at 0x%08x\n",
                       source);
         return;
     }
-    for (uint32_t row = 0; row < doubled_height / 2; row++) {
+    pixels = source_pixels;
+    if (format == LCDC_LAYER0_FORMAT_RGB565) {
+        converted_pixels = g_malloc(pixel_count);
+        pixels = converted_pixels;
+        for (uint32_t i = 0; i < pixel_count; i++) {
+            uint16_t rgb565 = lduw_le_p(source_pixels + 2 * i);
+
+            pixels[i] = ((rgb565 >> 8) & 0xe0) |
+                        ((rgb565 >> 6) & 0x1c) |
+                        ((rgb565 >> 3) & 0x03);
+        }
+    }
+    for (uint32_t row = 0; row < height; row++) {
         pbl_display_update_framebuffer(s->display,
                                        (y + row) * 200 + x,
                                        pixels + row * width, width);

@@ -63,6 +63,7 @@
 #define LCDC1_SETTING      0x5000800c
 #define LCDC1_CANVAS_TL    0x50008010
 #define LCDC1_CANVAS_BR    0x50008014
+#define LCDC1_LAYER0_CONFIG 0x5000801c
 #define LCDC1_LAYER0_SRC   0x5000802c
 #define LCDC1_JDI_CTRL     0x500080ec
 #define WDT1_CCR           0x5009400c
@@ -189,6 +190,8 @@
 #define EPIC_ACTIVE        (1U << 30)
 #define EPIC_ALL_BYPASS    (1U << 25)
 #define EPIC_H_MIRROR      (1U << 2)
+#define LCDC_FORMAT_RGB565  0
+#define LCDC_FORMAT_RGB332  4
 #define WDT_CMD_STOP       0x34
 #define WDT_CMD_START      0x76
 #define WDT_SR_ACTIVE      (1U << 1)
@@ -782,11 +785,29 @@ static void test_lcdc_jdi(void)
 {
     const uint32_t jdi_irq = (1U << 20) | (1U << 4);
     const uint32_t eof_irq = (1U << 16) | (1U << 0);
+    const uint8_t rgb332[] = {
+        0xe0, 0x1c, 0x03,
+        0xff, 0xc0, 0xdc,
+    };
+    const uint8_t rgb565[] = {
+        0xe7, 0xf8, 0xe7, 0x1f, 0xff, 0x18,
+        0xff, 0xff, 0xe7, 0xd8, 0xe7, 0xdf,
+    };
+    const uint8_t expected[] = {
+        0xff, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0x00,
+    };
+    g_autofree char *tmpdir = g_dir_make_tmp("sf32lb52-lcdc-XXXXXX", NULL);
+    g_autofree char *ppm_path = g_build_filename(tmpdir, "display.ppm", NULL);
+    g_autofree char *ppm = NULL;
+    gsize ppm_length;
+    const char *header = "P6\n200 228\n255\n";
     QTestState *qts = sf32lb52_start();
 
-    qtest_memset(qts, HPSYS_RAM_BASE, 0xe0, 200 * 2);
-    qtest_writel(qts, LCDC1_CANVAS_TL, 0);
-    qtest_writel(qts, LCDC1_CANVAS_BR, (3U << 16) | 199);
+    qtest_bufwrite(qts, HPSYS_RAM_BASE, rgb332, sizeof(rgb332));
+    qtest_writel(qts, LCDC1_CANVAS_TL, (20U << 16) | 10);
+    qtest_writel(qts, LCDC1_CANVAS_BR, (23U << 16) | 12);
+    qtest_writel(qts, LCDC1_LAYER0_CONFIG, LCDC_FORMAT_RGB332);
     qtest_writel(qts, LCDC1_LAYER0_SRC, HPSYS_RAM_BASE);
     qtest_writel(qts, LCDC1_SETTING, (1U << 4) | (1U << 0));
     qtest_writel(qts, LCDC1_JDI_CTRL, 1);
@@ -802,7 +823,31 @@ static void test_lcdc_jdi(void)
     qtest_writel(qts, LCDC1_IRQ, eof_irq);
     g_assert_cmphex(qtest_readl(qts, LCDC1_IRQ), ==, 0);
 
+    qtest_bufwrite(qts, HPSYS_RAM_BASE, rgb565, sizeof(rgb565));
+    qtest_writel(qts, LCDC1_CANVAS_TL, (40U << 16) | 30);
+    qtest_writel(qts, LCDC1_CANVAS_BR, (43U << 16) | 32);
+    qtest_writel(qts, LCDC1_LAYER0_CONFIG, LCDC_FORMAT_RGB565);
+    qtest_writel(qts, LCDC1_JDI_CTRL, 0);
+    qtest_writel(qts, LCDC1_JDI_CTRL, 1);
+
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'screendump', 'arguments': {'filename': %s}}",
+        ppm_path);
+    g_assert_true(g_file_get_contents(ppm_path, &ppm, &ppm_length, NULL));
+    g_assert_cmpuint(ppm_length, ==, strlen(header) + 200 * 228 * 3);
+    g_assert_true(g_str_has_prefix(ppm, header));
+    g_assert_cmpmem(ppm + strlen(header) + (20 * 200 + 10) * 3,
+                    9, expected, 9);
+    g_assert_cmpmem(ppm + strlen(header) + (21 * 200 + 10) * 3,
+                    9, expected + 9, 9);
+    g_assert_cmpmem(ppm + strlen(header) + (40 * 200 + 30) * 3,
+                    9, expected, 9);
+    g_assert_cmpmem(ppm + strlen(header) + (41 * 200 + 30) * 3,
+                    9, expected + 9, 9);
+
     qtest_quit(qts);
+    g_assert_cmpint(unlink(ppm_path), ==, 0);
+    g_assert_cmpint(rmdir(tmpdir), ==, 0);
 }
 
 static void test_i2c1(void)
