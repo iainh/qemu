@@ -126,10 +126,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define MPI_CR_SME2                   (1U << 18)
 #define MPI_SR_TCF                    (1U << 0)
 #define MPI_SR_SMF                    (1U << 3)
+#define MPI_SR_BUSY                   (1U << 31)
 #define MPI_SCR_TCFC                  (1U << 0)
 #define MPI_SCR_SMFC                  (1U << 3)
 #define SPI_FLASH_CMD_RDID            0x9f
 #define SPI_FLASH_ID_GD25Q256E        0x1940c8
+#define SPI_FLASH_COMMAND_NS          1000
+#define SPI_FLASH_PAGE_PROGRAM_NS     (700 * 1000)
+#define SPI_FLASH_SECTOR_ERASE_NS     (45 * 1000 * 1000)
+#define SPI_FLASH_BLOCK_ERASE_NS      (150 * 1000 * 1000)
 #define TRNG_CTRL                     0x00f000
 #define TRNG_STAT                     0x00f004
 #define TRNG_RAND_SEED0               0x00f010
@@ -399,6 +404,7 @@ struct SF32LB52MachineState {
     QEMUTimer *lcdc_timer;
     QEMUTimer *gptim2_timer;
     QEMUTimer *lptim1_timer;
+    QEMUTimer *mpi2_timer;
     QEMUTimer *rtc_alarm_timer;
     QEMUTimer *lsm6dso_timer;
     QEMUTimer *hci_ready_timer;
@@ -406,6 +412,8 @@ struct SF32LB52MachineState {
     SF32LB52DMATimer dmac_timer_context[DMAC_CHANNEL_COUNT];
     BlockBackend *flash_blk;
     uint32_t flash_backed_size;
+    uint32_t mpi2_command;
+    uint32_t mpi2_address;
     uint8_t lcdc_phase;
     uint32_t dwt_ctrl;
     uint32_t dwt_cyccnt_base;
@@ -984,10 +992,9 @@ static void sf32lb52_lcdc_copy_framebuffer(SF32LB52MachineState *s)
     }
 }
 
-static void sf32lb52_flash_command(SF32LB52MachineState *s, uint32_t command)
+static void sf32lb52_flash_command(SF32LB52MachineState *s, uint32_t command,
+                                   uint32_t address)
 {
-    uint32_t *regs = s->hpsys_periph.regs;
-    uint32_t address = regs[MPI2_AR1 / 4];
     uint8_t *flash = memory_region_get_ram_ptr(&s->flash);
     uint32_t erase_size = 0;
 
@@ -1042,6 +1049,59 @@ static void sf32lb52_flash_command(SF32LB52MachineState *s, uint32_t command)
                              MIN(erase_size,
                                  SF32LB52_FLASH_SIZE - address));
     }
+}
+
+static uint64_t sf32lb52_flash_command_time(uint32_t command)
+{
+    switch (command & 0xff) {
+    case 0x02:
+    case 0x12:
+    case 0x32:
+    case 0x34:
+        return SPI_FLASH_PAGE_PROGRAM_NS;
+    case 0x20:
+    case 0x21:
+        return SPI_FLASH_SECTOR_ERASE_NS;
+    case 0x52:
+    case 0xd8:
+    case 0xdc:
+        return SPI_FLASH_BLOCK_ERASE_NS;
+    default:
+        return SPI_FLASH_COMMAND_NS;
+    }
+}
+
+static void sf32lb52_mpi2_complete(void *opaque)
+{
+    SF32LB52MachineState *s = opaque;
+    uint32_t *regs = s->hpsys_periph.regs;
+
+    sf32lb52_flash_command(s, s->mpi2_command, s->mpi2_address);
+    regs[MPI2_SR / 4] &= ~MPI_SR_BUSY;
+    regs[MPI2_SR / 4] |= MPI_SR_TCF;
+    if ((regs[MPI2_CR / 4] & (MPI_CR_CMD2E | MPI_CR_SME2)) ==
+        (MPI_CR_CMD2E | MPI_CR_SME2)) {
+        regs[MPI2_SR / 4] |= MPI_SR_SMF;
+    }
+}
+
+static void sf32lb52_mpi2_start(SF32LB52MachineState *s, uint32_t command)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+
+    if (regs[MPI2_SR / 4] & MPI_SR_BUSY) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sf32lb52: MPI2 command 0x%02x while busy\n",
+                      command & 0xff);
+        return;
+    }
+    s->mpi2_command = command;
+    s->mpi2_address = regs[MPI2_AR1 / 4];
+    regs[MPI2_SR / 4] &= ~(MPI_SR_TCF | MPI_SR_SMF);
+    regs[MPI2_SR / 4] |= MPI_SR_BUSY;
+    timer_mod(s->mpi2_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              sf32lb52_flash_command_time(command));
 }
 
 static uint32_t sf32lb52_dwt_cyccnt(SF32LB52MachineState *s)
@@ -1732,13 +1792,9 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
             }
             break;
         case MPI2_CMDR1:
-            sf32lb52_flash_command(s, value);
-            r->regs[MPI2_SR / 4] |= MPI_SR_TCF;
-            if ((r->regs[MPI2_CR / 4] & (MPI_CR_CMD2E | MPI_CR_SME2)) ==
-                (MPI_CR_CMD2E | MPI_CR_SME2)) {
-                r->regs[MPI2_SR / 4] |= MPI_SR_SMF;
-            }
-            break;
+            r->regs[offset / 4] = value;
+            sf32lb52_mpi2_start(s, value);
+            return;
         case MPI2_SCR:
             if (value & MPI_SCR_TCFC) {
                 r->regs[MPI2_SR / 4] &= ~MPI_SR_TCF;
@@ -1859,6 +1915,7 @@ static void sf32lb52_reset(void *opaque)
     timer_del(s->lcdc_timer);
     timer_del(s->gptim2_timer);
     timer_del(s->lptim1_timer);
+    timer_del(s->mpi2_timer);
     timer_del(s->rtc_alarm_timer);
     timer_del(s->lsm6dso_timer);
     timer_del(s->hci_ready_timer);
@@ -2078,6 +2135,8 @@ static void sf32lb52_machine_init(MachineState *machine)
                                    sf32lb52_gptim2_expire, s);
     s->lptim1_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    sf32lb52_lptim1_expire, s);
+    s->mpi2_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                 sf32lb52_mpi2_complete, s);
     s->rtc_alarm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                       sf32lb52_rtc_alarm, s);
     s->lsm6dso_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,

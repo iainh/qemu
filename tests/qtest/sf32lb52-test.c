@@ -129,6 +129,7 @@
 #define EFUSEC_SR_DONE     (1U << 0)
 #define MPI_SR_TCF         (1U << 0)
 #define MPI_SR_SMF         (1U << 3)
+#define MPI_SR_BUSY        (1U << 31)
 #define MPI_CR_CMD2E       (1U << 16)
 #define MPI_CR_SME2        (1U << 18)
 #define SPI_FLASH_RDID     0x9f
@@ -250,12 +251,15 @@ static void test_startup_handshakes(void)
     g_assert_cmphex(qtest_readl(qts, EFUSEC_BANK0_DATA1), ==, 0xa575524c);
 
     qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_RDID);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, MPI_SR_BUSY);
+    qtest_clock_step(qts, 1000);
     g_assert_cmphex(qtest_readl(qts, MPI2_SR) & MPI_SR_TCF, ==, MPI_SR_TCF);
     g_assert_cmphex(qtest_readl(qts, MPI2_DR), ==, SPI_FLASH_ID);
     qtest_writel(qts, MPI2_SCR, MPI_SR_TCF);
     g_assert_cmphex(qtest_readl(qts, MPI2_SR) & MPI_SR_TCF, ==, 0);
     qtest_writel(qts, MPI2_CR, MPI_CR_CMD2E | MPI_CR_SME2);
     qtest_writel(qts, MPI2_CMDR1, 0x20);
+    qtest_clock_step(qts, 45 * G_TIME_SPAN_MILLISECOND * 1000);
     g_assert_cmphex(qtest_readl(qts, MPI2_SR) & MPI_SR_SMF, ==, MPI_SR_SMF);
     qtest_writel(qts, MPI2_SCR, MPI_SR_SMF);
     g_assert_cmphex(qtest_readl(qts, MPI2_SR) & MPI_SR_SMF, ==, 0);
@@ -474,21 +478,30 @@ static void test_flash_program_and_erase(void)
     QTestState *qts = sf32lb52_start();
     const uint32_t flash_offset = 0x1000000;
 
-    qtest_writel(qts, MPI2_AR1, flash_offset);
-    qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_SE);
-    g_assert_cmphex(qtest_readl(qts, 0x12000000 + flash_offset), ==,
-                    0xffffffff);
-
     qtest_writel(qts, HPSYS_RAM_BASE, 0x5aa53cc3);
     qtest_writel(qts, DMAC1_CNDTR2, 4);
     qtest_writel(qts, DMAC1_CPAR2, MPI2_DR);
     qtest_writel(qts, DMAC1_CM0AR2, HPSYS_RAM_BASE);
     qtest_writel(qts, DMAC1_CCR2, DMAC_CCR_EN);
+    qtest_writel(qts, MPI2_AR1, flash_offset);
     qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_QPP);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, MPI_SR_BUSY);
+    g_assert_cmphex(qtest_readl(qts, 0x12000000 + flash_offset), ==,
+                    0xffffffff);
+    qtest_clock_step(qts, 699 * 1000);
+    g_assert_cmphex(qtest_readl(qts, 0x12000000 + flash_offset), ==,
+                    0xffffffff);
+    qtest_clock_step(qts, 1000);
     g_assert_cmphex(qtest_readl(qts, 0x12000000 + flash_offset), ==,
                     0x5aa53cc3);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, MPI_SR_TCF);
 
     qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_SE);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, MPI_SR_BUSY);
+    qtest_clock_step(qts, 44 * G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, 0x12000000 + flash_offset), ==,
+                    0x5aa53cc3);
+    qtest_clock_step(qts, G_TIME_SPAN_MILLISECOND * 1000);
     g_assert_cmphex(qtest_readl(qts, 0x12000000 + flash_offset), ==,
                     0xffffffff);
 
@@ -517,12 +530,14 @@ static void test_flash_backing(void)
                     initial);
     qtest_writel(qts, MPI2_AR1, flash_offset);
     qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_SE);
+    qtest_clock_step(qts, 45 * G_TIME_SPAN_MILLISECOND * 1000);
     qtest_writel(qts, HPSYS_RAM_BASE, programmed);
     qtest_writel(qts, DMAC1_CNDTR2, sizeof(programmed));
     qtest_writel(qts, DMAC1_CPAR2, MPI2_DR);
     qtest_writel(qts, DMAC1_CM0AR2, HPSYS_RAM_BASE);
     qtest_writel(qts, DMAC1_CCR2, DMAC_CCR_EN);
     qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_QPP);
+    qtest_clock_step(qts, 700 * 1000);
     qtest_quit(qts);
 
     fd = open(path, O_RDONLY);
