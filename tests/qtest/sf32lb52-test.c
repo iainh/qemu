@@ -46,6 +46,18 @@
 #define I2C_IER            0x08
 #define I2C_SR             0x0c
 #define I2C_DBR            0x10
+#define GPIO1_BANK0        0x500a0000
+#define GPIO1_BANK1        0x500a0080
+#define GPIO_DIR           0x00
+#define GPIO_IER           0x1c
+#define GPIO_IESR          0x20
+#define GPIO_ITR           0x28
+#define GPIO_ITSR          0x2c
+#define GPIO_IPHR          0x34
+#define GPIO_IPHSR         0x38
+#define GPIO_IPLR          0x40
+#define GPIO_IPLSR         0x44
+#define GPIO_ISR           0x4c
 #define AUDCODEC_PLL_CFG0   0x50088080
 #define AUDCODEC_PLL_CAL_CFG 0x500880a4
 #define AUDCODEC_PLL_CAL_RESULT 0x500880a8
@@ -417,6 +429,66 @@ static void test_obelix_i2c_devices(void)
     qtest_quit(qts);
 }
 
+static void gpio_enable_both_edges(QTestState *qts, uint32_t base,
+                                   uint32_t mask)
+{
+    qtest_writel(qts, base + GPIO_ITSR, mask);
+    qtest_writel(qts, base + GPIO_IPHSR, mask);
+    qtest_writel(qts, base + GPIO_IPLSR, mask);
+    qtest_writel(qts, base + GPIO_IESR, mask);
+
+    g_assert_cmphex(qtest_readl(qts, base + GPIO_ITR) & mask, ==, mask);
+    g_assert_cmphex(qtest_readl(qts, base + GPIO_IPHR) & mask, ==, mask);
+    g_assert_cmphex(qtest_readl(qts, base + GPIO_IPLR) & mask, ==, mask);
+    g_assert_cmphex(qtest_readl(qts, base + GPIO_IER) & mask, ==, mask);
+}
+
+static void test_obelix_buttons(void)
+{
+    QTestState *qts = sf32lb52_start();
+    uint32_t back = 1U << (34 - 32);
+
+    gpio_enable_both_edges(qts, GPIO1_BANK1, back);
+    g_assert_cmphex(qtest_readl(qts, GPIO1_BANK1 + GPIO_DIR) & back, ==, 0);
+
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'input-send-event', 'arguments': {'events': ["
+        "{'type': 'key', 'data': {'down': true, "
+        "'key': {'type': 'qcode', 'data': 'q'}}}]}}");
+
+    g_assert_cmphex(qtest_readl(qts, GPIO1_BANK1 + GPIO_DIR) & back, ==,
+                    back);
+    g_assert_cmphex(qtest_readl(qts, GPIO1_BANK1 + GPIO_ISR) & back, ==,
+                    back);
+    qtest_writel(qts, GPIO1_BANK1 + GPIO_ISR, back);
+    g_assert_cmphex(qtest_readl(qts, GPIO1_BANK1 + GPIO_ISR) & back, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_obelix_touch(void)
+{
+    QTestState *qts = sf32lb52_start();
+    uint32_t touch_int = 1U << 27;
+
+    gpio_enable_both_edges(qts, GPIO1_BANK0, touch_int);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'input-send-event', 'arguments': {'events': ["
+        "{'type': 'abs', 'data': {'axis': 'x', 'value': 16384}},"
+        "{'type': 'abs', 'data': {'axis': 'y', 'value': 8192}},"
+        "{'type': 'btn', 'data': {'down': true, 'button': 'left'}}]}}");
+
+    g_assert_cmphex(qtest_readl(qts, GPIO1_BANK0 + GPIO_ISR) & touch_int, ==,
+                    touch_int);
+    g_assert_cmphex(i2c_read_register(qts, I2C3_BASE, 0x15, 0x02), ==, 1);
+    g_assert_cmphex(i2c_read_register(qts, I2C3_BASE, 0x15, 0x03), ==, 0);
+    g_assert_cmphex(i2c_read_register(qts, I2C3_BASE, 0x15, 0x04), ==, 100);
+    g_assert_cmphex(i2c_read_register(qts, I2C3_BASE, 0x15, 0x05), ==, 0);
+    g_assert_cmphex(i2c_read_register(qts, I2C3_BASE, 0x15, 0x06), ==, 57);
+
+    qtest_quit(qts);
+}
+
 static void test_usart1(void)
 {
     QTestState *qts = sf32lb52_start();
@@ -452,6 +524,8 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/lcdc-jdi", test_lcdc_jdi);
     qtest_add_func("sf32lb52/i2c1", test_i2c1);
     qtest_add_func("sf32lb52/obelix-i2c-devices", test_obelix_i2c_devices);
+    qtest_add_func("sf32lb52/obelix-buttons", test_obelix_buttons);
+    qtest_add_func("sf32lb52/obelix-touch", test_obelix_touch);
     qtest_add_func("sf32lb52/usart1", test_usart1);
 
     return g_test_run();

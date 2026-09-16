@@ -30,7 +30,6 @@
 #include "ui/input.h"
 #include "hw/arm/pebble_gpio.h"
 
-#define TYPE_PEBBLE_GPIO "pebble-gpio"
 OBJECT_DECLARE_SIMPLE_TYPE(PblGpio, PEBBLE_GPIO)
 
 /* Register offsets */
@@ -62,12 +61,22 @@ struct PblGpio {
     QEMUTimer *debounce_timer;
     uint32_t pending_release;  /* buttons waiting to be released */
 
+    PblButtonStateCallback callback;
+    void *callback_opaque;
+
     QemuInputHandlerState *input_handler;
 };
 
 static void pbl_gpio_update_irq(PblGpio *s)
 {
     qemu_set_irq(s->irq, (s->intctrl & 1) && (s->btn_edge != 0));
+}
+
+static void pbl_gpio_notify(PblGpio *s)
+{
+    if (s->callback) {
+        s->callback(s->callback_opaque, s->btn_state);
+    }
 }
 
 static int pbl_gpio_qcode_to_button(int qcode)
@@ -100,6 +109,7 @@ static void pbl_gpio_debounce_cb(void *opaque)
         s->btn_edge |= released;
         s->pending_release = 0;
         pbl_gpio_update_irq(s);
+        pbl_gpio_notify(s);
     }
 }
 
@@ -134,6 +144,7 @@ static void pbl_gpio_input_event(DeviceState *dev, QemuConsole *src,
         s->btn_state |= btn;
         s->btn_edge |= btn;
         pbl_gpio_update_irq(s);
+        pbl_gpio_notify(s);
     }
 
     /* Schedule release after debounce period */
@@ -268,7 +279,17 @@ void pbl_gpio_set_button_state(uint32_t button_state)
         s->btn_state = new_state;
         s->btn_edge |= changed;
         pbl_gpio_update_irq(s);
+        pbl_gpio_notify(s);
     }
+}
+
+void pbl_gpio_set_callback(DeviceState *dev, PblButtonStateCallback callback,
+                           void *opaque)
+{
+    PblGpio *s = PEBBLE_GPIO(dev);
+
+    s->callback = callback;
+    s->callback_opaque = opaque;
 }
 
 static const TypeInfo pbl_gpio_info = {

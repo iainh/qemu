@@ -8,7 +8,11 @@
 #ifndef HW_ARM_PEBBLE_GPIO_H
 #define HW_ARM_PEBBLE_GPIO_H
 
-#include <stdint.h>
+#include "hw/qdev-core.h"
+
+#define TYPE_PEBBLE_GPIO "pebble-gpio"
+
+typedef void (*PblButtonStateCallback)(void *opaque, uint32_t button_state);
 
 /* Button bit positions (matching pebble_gpio.c register layout) */
 #define PBL_BTN_BACK    (1 << 0)
@@ -18,5 +22,7 @@
 
 /* Set button state from a bitmask. Called by pebble_control protocol handler. */
 void pbl_gpio_set_button_state(uint32_t button_state);
+void pbl_gpio_set_callback(DeviceState *dev, PblButtonStateCallback callback,
+                           void *opaque);
 
 #endif /* HW_ARM_PEBBLE_GPIO_H */

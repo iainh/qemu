@@ -19,7 +19,9 @@
 #include "hw/arm/armv7m.h"
 #include "hw/arm/boot.h"
 #include "hw/boards.h"
+#include "hw/arm/pebble_gpio.h"
 #include "hw/display/pebble_display.h"
+#include "hw/input/pebble_touch.h"
 #include "hw/irq.h"
 #include "hw/qdev-clock.h"
 #include "hw/qdev-properties-system.h"
@@ -51,6 +53,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define SF32LB52_USART1_BASE          0x50084000
 #define SF32LB52_USART1_IRQ           59
 #define SF32LB52_LCDC1_IRQ            63
+#define SF32LB52_GPIO1_IRQ            84
 #define SF32LB52_I2C1_IRQ             61
 #define SF32LB52_I2C2_IRQ             76
 #define SF32LB52_I2C4_IRQ             78
@@ -125,6 +128,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define I2C_SR_TE                     (1U << 6)
 #define I2C_SR_RF                     (1U << 7)
 #define I2C_SR_MSD                    (1U << 12)
+#define GPIO1_BASE                    0x0a0000
+#define GPIO_BANK_STRIDE              0x80
+#define GPIO_DIR                      0x00
+#define GPIO_IER                      0x1c
+#define GPIO_IESR                     0x20
+#define GPIO_IECR                     0x24
+#define GPIO_ITR                      0x28
+#define GPIO_ITSR                     0x2c
+#define GPIO_ITCR                     0x30
+#define GPIO_IPHR                     0x34
+#define GPIO_IPHSR                    0x38
+#define GPIO_IPHCR                    0x3c
+#define GPIO_IPLR                     0x40
+#define GPIO_IPLSR                    0x44
+#define GPIO_IPLCR                    0x48
+#define GPIO_ISR                      0x4c
+#define OBELIX_TOUCH_INT_PIN          27
+#define OBELIX_BUTTON_PIN_BASE        34
+#define OBELIX_BUTTON_COUNT           4
 #define AW2016_ADDRESS                0x64
 #define AW2016_CHIP_ID_REG            0x00
 #define AW2016_CHIP_ID                0x09
@@ -226,6 +248,9 @@ struct SF32LB52MachineState {
     SF32LB52PeripheralRegion lpsys_periph;
     SF32LB52I2CState i2c[4];
     DeviceState *display;
+    DeviceState *buttons;
+    DeviceState *touch;
+    qemu_irq gpio1_irq;
     qemu_irq lcdc_irq;
     QEMUTimer *lcdc_timer;
     BlockBackend *flash_blk;
@@ -241,6 +266,133 @@ struct SF32LB52MachineState {
     Clock *sysclk;
     Clock *refclk;
 };
+
+static uint32_t *sf32lb52_gpio_reg(SF32LB52MachineState *s, unsigned int pin,
+                                   hwaddr reg)
+{
+    hwaddr offset = GPIO1_BASE + (pin / 32) * GPIO_BANK_STRIDE + reg;
+
+    return &s->hpsys_periph.regs[offset / 4];
+}
+
+static void sf32lb52_gpio_update_irq(SF32LB52MachineState *s)
+{
+    uint32_t pending = 0;
+
+    for (int bank = 0; bank < 2; bank++) {
+        uint32_t *ier = sf32lb52_gpio_reg(s, bank * 32, GPIO_IER);
+        uint32_t *isr = sf32lb52_gpio_reg(s, bank * 32, GPIO_ISR);
+
+        pending |= *ier & *isr;
+    }
+    qemu_set_irq(s->gpio1_irq, pending != 0);
+}
+
+static void sf32lb52_gpio_input(SF32LB52MachineState *s, unsigned int pin,
+                                bool high)
+{
+    uint32_t mask = 1U << (pin % 32);
+    uint32_t *dir = sf32lb52_gpio_reg(s, pin, GPIO_DIR);
+    bool old_high = (*dir & mask) != 0;
+    uint32_t *itr = sf32lb52_gpio_reg(s, pin, GPIO_ITR);
+    uint32_t *iphr = sf32lb52_gpio_reg(s, pin, GPIO_IPHR);
+    uint32_t *iplr = sf32lb52_gpio_reg(s, pin, GPIO_IPLR);
+    uint32_t *isr = sf32lb52_gpio_reg(s, pin, GPIO_ISR);
+
+    if (high) {
+        *dir |= mask;
+    } else {
+        *dir &= ~mask;
+    }
+    if (old_high != high && (*itr & mask) &&
+        ((high && (*iphr & mask)) || (!high && (*iplr & mask)))) {
+        *isr |= mask;
+    }
+    sf32lb52_gpio_update_irq(s);
+}
+
+static bool sf32lb52_gpio_write(SF32LB52MachineState *s, hwaddr offset,
+                                uint32_t value)
+{
+    hwaddr gpio_offset;
+    hwaddr reg;
+    unsigned int bank;
+    uint32_t *regs = s->hpsys_periph.regs;
+    uint32_t *target;
+
+    if (offset < GPIO1_BASE ||
+        offset >= GPIO1_BASE + 2 * GPIO_BANK_STRIDE) {
+        return false;
+    }
+    gpio_offset = offset - GPIO1_BASE;
+    bank = gpio_offset / GPIO_BANK_STRIDE;
+    reg = gpio_offset % GPIO_BANK_STRIDE;
+    target = &regs[(GPIO1_BASE + bank * GPIO_BANK_STRIDE) / 4];
+
+    switch (reg) {
+    case GPIO_IESR:
+        target[GPIO_IER / 4] |= value;
+        break;
+    case GPIO_IECR:
+        target[GPIO_IER / 4] &= ~value;
+        break;
+    case GPIO_ITSR:
+        target[GPIO_ITR / 4] |= value;
+        break;
+    case GPIO_ITCR:
+        target[GPIO_ITR / 4] &= ~value;
+        break;
+    case GPIO_IPHSR:
+        target[GPIO_IPHR / 4] |= value;
+        break;
+    case GPIO_IPHCR:
+        target[GPIO_IPHR / 4] &= ~value;
+        break;
+    case GPIO_IPLSR:
+        target[GPIO_IPLR / 4] |= value;
+        break;
+    case GPIO_IPLCR:
+        target[GPIO_IPLR / 4] &= ~value;
+        break;
+    case GPIO_ISR:
+        target[GPIO_ISR / 4] &= ~value;
+        break;
+    default:
+        regs[offset / 4] = value;
+        break;
+    }
+    sf32lb52_gpio_update_irq(s);
+    return true;
+}
+
+static void sf32lb52_button_state(void *opaque, uint32_t state)
+{
+    SF32LB52MachineState *s = opaque;
+
+    for (int button = 0; button < OBELIX_BUTTON_COUNT; button++) {
+        bool pressed = state & (1U << button);
+
+        sf32lb52_gpio_input(s, OBELIX_BUTTON_PIN_BASE + button,
+                            button == 0 ? pressed : !pressed);
+    }
+}
+
+static void sf32lb52_touch_state(void *opaque, bool down,
+                                 uint32_t x, uint32_t y)
+{
+    SF32LB52MachineState *s = opaque;
+    uint8_t *data = s->i2c[2].data[CST816_ADDRESS];
+
+    data[0x01] = 0;
+    data[0x02] = down ? 1 : 0;
+    data[0x03] = (x >> 8) & 0xf;
+    data[0x04] = x;
+    data[0x05] = (y >> 8) & 0xf;
+    data[0x06] = y;
+
+    sf32lb52_gpio_input(s, OBELIX_TOUCH_INT_PIN, false);
+    sf32lb52_gpio_input(s, OBELIX_TOUCH_INT_PIN, true);
+}
 
 static int sf32lb52_i2c_index(hwaddr offset)
 {
@@ -594,6 +746,9 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
                   r->name, offset, value);
 
     if (!strcmp(r->name, "sf32lb52.hpsys-peripherals")) {
+        if (sf32lb52_gpio_write(s, offset, value)) {
+            return;
+        }
         if (sf32lb52_dmac_write(s, r->regs, offset, value, &result)) {
             return;
         }
@@ -769,6 +924,11 @@ static void sf32lb52_reset(void *opaque)
     memset(s->dmac_memory, 0, sizeof(s->dmac_memory));
     memset(s->hpsys_periph.regs, 0, SF32LB52_PERIPH_SIZE);
     memset(s->lpsys_periph.regs, 0, SF32LB52_PERIPH_SIZE);
+    *sf32lb52_gpio_reg(s, OBELIX_TOUCH_INT_PIN, GPIO_DIR) |=
+        1U << OBELIX_TOUCH_INT_PIN;
+    *sf32lb52_gpio_reg(s, OBELIX_BUTTON_PIN_BASE, GPIO_DIR) |=
+        0xeU << (OBELIX_BUTTON_PIN_BASE % 32);
+    qemu_irq_lower(s->gpio1_irq);
     for (int i = 0; i < ARRAY_SIZE(s->i2c); i++) {
         s->i2c[i].address = 0;
         s->i2c[i].reg = 0;
@@ -918,6 +1078,7 @@ static void sf32lb52_machine_init(MachineState *machine)
     for (int i = 0; i < ARRAY_SIZE(s->i2c); i++) {
         s->i2c[i].irq = qdev_get_gpio_in(armv7m, i2c_irq[i]);
     }
+    s->gpio1_irq = qdev_get_gpio_in(armv7m, SF32LB52_GPIO1_IRQ);
     s->lcdc_irq = qdev_get_gpio_in(armv7m, SF32LB52_LCDC1_IRQ);
     s->lcdc_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                  sf32lb52_lcdc_timer, s);
@@ -928,6 +1089,16 @@ static void sf32lb52_machine_init(MachineState *machine)
     qdev_prop_set_uint32(s->display, "format",
                          PEBBLE_DISPLAY_FORMAT_RGB332);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(s->display), &error_fatal);
+
+    s->buttons = qdev_new(TYPE_PEBBLE_GPIO);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(s->buttons), &error_fatal);
+    pbl_gpio_set_callback(s->buttons, sf32lb52_button_state, s);
+
+    s->touch = qdev_new(TYPE_PEBBLE_TOUCH);
+    qdev_prop_set_uint32(s->touch, "display-width", 200);
+    qdev_prop_set_uint32(s->touch, "display-height", 228);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(s->touch), &error_fatal);
+    pbl_touch_set_callback(s->touch, sf32lb52_touch_state, s);
 
     usart = qdev_new("sf32lb52-usart");
     qdev_prop_set_chr(usart, "chardev", serial_hd(0));

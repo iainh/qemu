@@ -29,8 +29,6 @@
 #define TYPE_PEBBLE_GENERIC_RTC   "pebble-rtc"
 #define TYPE_PEBBLE_GENERIC_TIMER "pebble-timer"
 #define TYPE_PEBBLE_EXTFLASH      "pebble-extflash"
-#define TYPE_PEBBLE_GPIO          "pebble-gpio"
-#define TYPE_PEBBLE_TOUCH         "pebble-touch"
 #define TYPE_PEBBLE_AUDIO         "pebble-audio"
 
 /* ===== Memory map ===== */

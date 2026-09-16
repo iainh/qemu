@@ -18,12 +18,12 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/irq.h"
+#include "hw/input/pebble_touch.h"
 #include "hw/sysbus.h"
 #include "hw/qdev-properties.h"
 #include "ui/console.h"
 #include "ui/input.h"
 
-#define TYPE_PEBBLE_TOUCH "pebble-touch"
 OBJECT_DECLARE_SIMPLE_TYPE(PblTouch, PEBBLE_TOUCH)
 
 /* Register offsets */
@@ -51,7 +51,16 @@ struct PblTouch {
     uint32_t display_h;
 
     QemuInputHandlerState *input_handler;
+    PblTouchStateCallback callback;
+    void *callback_opaque;
 };
+
+static void pbl_touch_notify(PblTouch *s)
+{
+    if (s->callback) {
+        s->callback(s->callback_opaque, s->state, s->x, s->y);
+    }
+}
 
 static void pbl_touch_update_irq(PblTouch *s)
 {
@@ -74,6 +83,7 @@ static void pbl_touch_input_event(DeviceState *dev, QemuConsole *src,
             }
             s->intstat |= INT_TOUCH_EVENT;
             pbl_touch_update_irq(s);
+            pbl_touch_notify(s);
         }
     } else if (evt->type == INPUT_EVENT_KIND_ABS) {
         InputMoveEvent *move = evt->u.abs.data;
@@ -85,8 +95,18 @@ static void pbl_touch_input_event(DeviceState *dev, QemuConsole *src,
         if (s->state) {
             s->intstat |= INT_TOUCH_EVENT;
             pbl_touch_update_irq(s);
+            pbl_touch_notify(s);
         }
     }
+}
+
+void pbl_touch_set_callback(DeviceState *dev, PblTouchStateCallback callback,
+                            void *opaque)
+{
+    PblTouch *s = PEBBLE_TOUCH(dev);
+
+    s->callback = callback;
+    s->callback_opaque = opaque;
 }
 
 static const QemuInputHandler pbl_touch_input_handler = {
