@@ -53,9 +53,12 @@
 #define EPIC_L0_TL         0x50007054
 #define EPIC_L0_BR         0x50007058
 #define EPIC_L0_SRC        0x50007060
-#define EPIC_AHB_CTRL      0x50007100
-#define EPIC_AHB_MEM       0x50007104
-#define EPIC_AHB_STRIDE    0x50007108
+#define EPIC_AHB_CTRL      0x500070f8
+#define EPIC_AHB_MEM       0x500070fc
+#define EPIC_AHB_STRIDE    0x50007100
+#define EPIC_DEBUG         0x50007104
+#define EPIC_VL_SCALE_INIT_H 0x50007114
+#define EPIC_VL_SCALE_INIT_V 0x50007118
 #define LCDC1_IRQ          0x50008008
 #define LCDC1_SETTING      0x5000800c
 #define LCDC1_CANVAS_TL    0x50008010
@@ -681,10 +684,13 @@ static void test_epic(void)
     static const uint8_t rgb565[] = {
         0x00, 0xf8, 0xe0, 0x07,
         0x1f, 0x00, 0xff, 0xff,
+        0x00, 0x00, 0xe0, 0xff,
+        0xff, 0x07, 0x1f, 0xf8,
     };
     static const uint8_t blue_half_alpha[] = { 0xff, 0x00, 0x00, 0x80 };
     const uint32_t source = HPSYS_RAM_BASE;
     const uint32_t output = HPSYS_RAM_BASE + 0x100;
+    const uint32_t wrong_output = HPSYS_RAM_BASE + 0x180;
     QTestState *qts = sf32lb52_start();
 
     qtest_irq_intercept_in(qts, "/machine/armv7m");
@@ -698,6 +704,8 @@ static void test_epic(void)
     qtest_writel(qts, EPIC_L0_CFG,
                  EPIC_ACTIVE | EPIC_ALPHA_SEL | (255U << 5) | (4U << 16));
     qtest_writel(qts, EPIC_AHB_CTRL, 0);
+    qtest_writew(qts, wrong_output, 0x1234);
+    qtest_writel(qts, EPIC_DEBUG, wrong_output);
     qtest_writel(qts, EPIC_AHB_MEM, output);
     qtest_writel(qts, EPIC_AHB_STRIDE, 2);
     qtest_writel(qts, EPIC_SETTING, EPIC_EOF_MASK);
@@ -707,6 +715,7 @@ static void test_epic(void)
     g_assert_cmphex(qtest_readw(qts, output + 2), ==, 0x07e0);
     g_assert_cmphex(qtest_readw(qts, output + 6), ==, 0x001f);
     g_assert_cmphex(qtest_readw(qts, output + 8), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, wrong_output), ==, 0x1234);
     g_assert_cmphex(qtest_readl(qts, EPIC_STATUS), ==, 0);
     g_assert_cmphex(qtest_readl(qts, EPIC_EOF_IRQ), ==,
                     EPIC_EOF_STATUS | EPIC_EOF_CAUSE);
@@ -742,16 +751,18 @@ static void test_epic(void)
     qtest_writel(qts, EPIC_L0_CFG, 0);
     qtest_writel(qts, EPIC_VL_TL, 0);
     qtest_writel(qts, EPIC_VL_BR, 1);
-    qtest_writel(qts, EPIC_VL_EXTENTS, 3U << 16);
+    qtest_writel(qts, EPIC_VL_EXTENTS, (3U << 16) | 1);
     qtest_writel(qts, EPIC_VL_SRC, source);
     qtest_writel(qts, EPIC_VL_SCALE_H, 2U << 16);
+    qtest_writel(qts, EPIC_VL_SCALE_INIT_H, 1U << 16);
+    qtest_writel(qts, EPIC_VL_SCALE_INIT_V, 1U << 16);
     qtest_writel(qts, EPIC_VL_MISC, EPIC_H_MIRROR);
     qtest_writel(qts, EPIC_VL_CFG,
                  EPIC_ACTIVE | EPIC_ALPHA_SEL | (255U << 5) | (8U << 16));
     qtest_writel(qts, EPIC_AHB_MEM, output + 0x40);
     qtest_writel(qts, EPIC_COMMAND, EPIC_START);
-    g_assert_cmphex(qtest_readw(qts, output + 0x40), ==, 0xffff);
-    g_assert_cmphex(qtest_readw(qts, output + 0x42), ==, 0x07e0);
+    g_assert_cmphex(qtest_readw(qts, output + 0x40), ==, 0x07ff);
+    g_assert_cmphex(qtest_readw(qts, output + 0x42), ==, 0x0000);
 
     qtest_writel(qts, EPIC_EOF_IRQ,
                  EPIC_EOF_STATUS | EPIC_EOF_CAUSE);
