@@ -15,8 +15,9 @@ The machine provides:
 - external flash with persistent image backing and the PebbleOS slot 0
   vector-table alias
 - DWT cycle counter
-- startup clock, eFuse, RTC, TRNG, watchdog, I2C reset, audio PLL calibration,
-  and MPI flash handshakes
+- startup clock, eFuse, TRNG, watchdog, I2C reset, audio PLL calibration, and
+  MPI flash handshakes
+- running RTC calendar and alarm plus LPTIM1 low-power wake timer
 - interrupt-driven I2C controllers with generic register-backed slave storage
 - Obelix I2C device identities and ready states for its touch, motion,
   compass, backlight, and ambient-light drivers

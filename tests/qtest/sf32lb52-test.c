@@ -62,8 +62,22 @@
 #define AUDCODEC_PLL_CAL_CFG 0x500880a4
 #define AUDCODEC_PLL_CAL_RESULT 0x500880a8
 #define HPSYS_AON_ACR      0x500c0010
+#define HPSYS_AON_GTIMR    0x500c0034
 #define PMUC_LRC32_CR      0x500ca01c
+#define HPSYS_CFG_RTC_TR   0x5000b014
+#define HPSYS_CFG_RTC_DR   0x5000b018
+#define RTC_TR             0x500cb000
+#define RTC_DR             0x500cb004
+#define RTC_CR             0x500cb008
 #define RTC_ISR            0x500cb00c
+#define RTC_ALRMTR         0x500cb018
+#define RTC_ALRMDR         0x500cb01c
+#define LPTIM1_ISR         0x500c1000
+#define LPTIM1_ICR         0x500c1004
+#define LPTIM1_IER         0x500c1008
+#define LPTIM1_CR          0x500c1010
+#define LPTIM1_ARR         0x500c1018
+#define LPTIM1_CNT         0x500c101c
 #define USART1_BASE        0x50084000
 #define DWT_BASE           0xe0001000
 #define DWT_CTRL           0x00
@@ -108,6 +122,17 @@
 #define RTC_ISR_RSF        (1U << 7)
 #define RTC_ISR_INITF      (1U << 9)
 #define RTC_ISR_INIT       (1U << 10)
+#define RTC_CR_ALRME       (1U << 8)
+#define RTC_CR_ALRMIE      (1U << 11)
+#define RTC_ISR_ALRMF      (1U << 1)
+#define RTC_ALRMMASK_DATE  (1U << 27)
+#define RTC_ALRMMASK_MONTH (1U << 28)
+#define RTC_ALRMMASK_WDAY  (1U << 29)
+#define LPTIM_ISR_OF       (1U << 1)
+#define LPTIM_ISR_OFWKUP   (1U << 9)
+#define LPTIM_IER_OFIE     (1U << 1)
+#define LPTIM_CR_ENABLE    (1U << 0)
+#define LPTIM_CR_SNGSTRT   (1U << 1)
 #define ACR_HXT48_REQ      (1U << 1)
 #define ACR_HXT48_RDY      (1U << 31)
 #define LRC32_EN           (1U << 0)
@@ -227,6 +252,69 @@ static void test_dwt_cycle_counter(void)
     qtest_writel(qts, DWT_BASE + DWT_CTRL, DWT_CYCCNTENA);
     qtest_clock_step(qts, 1000);
     g_assert_cmphex(qtest_readl(qts, DWT_BASE + DWT_CYCCNT), ==, 340);
+
+    qtest_quit(qts);
+}
+
+static uint32_t rtc_time(unsigned int hour, unsigned int minute,
+                         unsigned int second)
+{
+    return ((hour / 10 << 4 | hour % 10) << 25) |
+           ((minute / 10 << 4 | minute % 10) << 18) |
+           ((second / 10 << 4 | second % 10) << 11);
+}
+
+static uint32_t rtc_date(unsigned int year, unsigned int month,
+                         unsigned int day)
+{
+    return (1U << 24) | ((year / 10 << 4 | year % 10) << 16) |
+           ((month / 10 << 4 | month % 10) << 8) |
+           (day / 10 << 4 | day % 10);
+}
+
+static void test_rtc_and_low_power_timer(void)
+{
+    QTestState *qts = sf32lb52_start();
+    uint32_t gtimer;
+
+    qtest_writel(qts, RTC_TR, rtc_time(12, 34, 58));
+    qtest_writel(qts, RTC_DR, rtc_date(26, 9, 16));
+    qtest_clock_step(qts, 3 * G_TIME_SPAN_SECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, RTC_TR) & ~0x3ff, ==,
+                    rtc_time(12, 35, 1));
+    g_assert_cmphex(qtest_readl(qts, RTC_DR) & 0x01ff1f3f, ==,
+                    rtc_date(26, 9, 16));
+    g_assert_cmphex(qtest_readl(qts, HPSYS_CFG_RTC_TR) & ~0x3ff, ==,
+                    rtc_time(12, 35, 1));
+    g_assert_cmphex(qtest_readl(qts, HPSYS_CFG_RTC_DR) & 0x01ff1f3f, ==,
+                    rtc_date(26, 9, 16));
+
+    qtest_writel(qts, RTC_ALRMTR, rtc_time(12, 35, 2));
+    qtest_writel(qts, RTC_ALRMDR,
+                 RTC_ALRMMASK_DATE | RTC_ALRMMASK_MONTH |
+                 RTC_ALRMMASK_WDAY);
+    qtest_writel(qts, RTC_CR, RTC_CR_ALRME | RTC_CR_ALRMIE);
+    qtest_clock_step(qts, G_TIME_SPAN_SECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, RTC_ISR) & RTC_ISR_ALRMF, ==,
+                    RTC_ISR_ALRMF);
+    qtest_writel(qts, RTC_ISR, 0);
+    g_assert_cmphex(qtest_readl(qts, RTC_ISR) & RTC_ISR_ALRMF, ==, 0);
+
+    qtest_writel(qts, LPTIM1_ARR, 100);
+    qtest_writel(qts, LPTIM1_IER, LPTIM_IER_OFIE);
+    qtest_writel(qts, LPTIM1_CR, LPTIM_CR_ENABLE | LPTIM_CR_SNGSTRT);
+    qtest_clock_step(qts, 9 * G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmpuint(qtest_readl(qts, LPTIM1_CNT), ==, 90);
+    g_assert_cmphex(qtest_readl(qts, LPTIM1_ISR), ==, 0);
+    qtest_clock_step(qts, 2 * G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, LPTIM1_ISR), ==,
+                    LPTIM_ISR_OF | LPTIM_ISR_OFWKUP);
+    qtest_writel(qts, LPTIM1_ICR, LPTIM_ISR_OF);
+    g_assert_cmphex(qtest_readl(qts, LPTIM1_ISR), ==, LPTIM_ISR_OFWKUP);
+
+    gtimer = qtest_readl(qts, HPSYS_AON_GTIMR);
+    qtest_clock_step(qts, G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmpuint(qtest_readl(qts, HPSYS_AON_GTIMR) - gtimer, >=, 32);
 
     qtest_quit(qts);
 }
@@ -517,6 +605,8 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/memory", test_memory);
     qtest_add_func("sf32lb52/startup-handshakes", test_startup_handshakes);
     qtest_add_func("sf32lb52/dwt-cycle-counter", test_dwt_cycle_counter);
+    qtest_add_func("sf32lb52/rtc-low-power-timer",
+                   test_rtc_and_low_power_timer);
     qtest_add_func("sf32lb52/dmac1-channel2", test_dmac1_channel2);
     qtest_add_func("sf32lb52/flash-program-erase",
                    test_flash_program_and_erase);
