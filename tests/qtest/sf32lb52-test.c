@@ -938,6 +938,67 @@ static void test_epic_obelix_l8(void)
     qtest_quit(qts);
 }
 
+static void test_epic_obelix_hal_hv_mirror(void)
+{
+    const uint32_t source = HPSYS_RAM_BASE + 0x1000;
+    const uint32_t output = HPSYS_RAM_BASE + 0x2000;
+    g_autofree uint8_t *pixels = g_malloc0(200 * 4);
+    QTestState *qts = sf32lb52_start();
+
+    memset(pixels, 5, 200 * 4);
+    pixels[0] = 1;
+    pixels[199] = 2;
+    pixels[3 * 200] = 3;
+    pixels[4 * 200 - 1] = 4;
+    qtest_memwrite(qts, source, pixels, 200 * 4);
+    qtest_writel(qts, EPIC_LUT + 1 * 4, 0xffff0000);
+    qtest_writel(qts, EPIC_LUT + 2 * 4, 0xff00ff00);
+    qtest_writel(qts, EPIC_LUT + 3 * 4, 0xff0000ff);
+    qtest_writel(qts, EPIC_LUT + 4 * 4, 0xffffffff);
+    qtest_writel(qts, EPIC_LUT + 5 * 4, 0xffffff00);
+
+    qtest_writel(qts, EPIC_CANVAS_TL, 0);
+    qtest_writel(qts, EPIC_CANVAS_BR, (3U << 16) | 199);
+    qtest_writel(qts, EPIC_CANVAS_BG, 0);
+    qtest_writel(qts, EPIC_VL_TL, 1);
+    qtest_writel(qts, EPIC_VL_BR, 1);
+    qtest_writel(qts, EPIC_VL_EXTENTS, 0);
+    qtest_writel(qts, EPIC_VL_SRC, source);
+    qtest_writel(qts, EPIC_VL_SCALE_H, 1U << 16);
+    qtest_writel(qts, EPIC_VL_SCALE_V, 1U << 16);
+    qtest_writel(qts, EPIC_VL_MISC, EPIC_H_MIRROR | EPIC_V_MIRROR);
+    qtest_writel(qts, EPIC_VL_CFG,
+                 EPIC_ACTIVE | EPIC_ALPHA_SEL | (255U << 5) |
+                 (1U << 13) | (200U << 16) | 6);
+    qtest_writel(qts, EPIC_L0_TL, 0);
+    qtest_writel(qts, EPIC_L0_BR, (3U << 16) | 199);
+    qtest_writel(qts, EPIC_L0_SRC, HPSYS_RAM_BASE + 0x4c0e0);
+    qtest_writel(qts, EPIC_L0_CFG, 0xa0c81fe6);
+    qtest_writel(qts, EPIC_AHB_CTRL, 0);
+    qtest_writel(qts, EPIC_AHB_MEM, output);
+    qtest_writel(qts, EPIC_AHB_STRIDE, 4);
+    qtest_writew(qts, output - 2, 0xdead);
+    qtest_memset(qts, output, 0xa5, 4 * 404);
+    qtest_writew(qts, output + 4 * 404, 0xbeef);
+
+    qtest_writel(qts, EPIC_COMMAND, EPIC_START);
+
+    g_assert_cmphex(qtest_readw(qts, output), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, output + 199 * 2), ==, 0x001f);
+    g_assert_cmphex(qtest_readw(qts, output + 404 + 2), ==, 0xffe0);
+    g_assert_cmphex(qtest_readw(qts, output + 3 * 404), ==, 0x07e0);
+    g_assert_cmphex(qtest_readw(qts, output + 3 * 404 + 199 * 2), ==,
+                    0xf800);
+    for (unsigned int y = 0; y < 4; y++) {
+        g_assert_cmphex(qtest_readl(qts, output + y * 404 + 400), ==,
+                        0xa5a5a5a5);
+    }
+    g_assert_cmphex(qtest_readw(qts, output - 2), ==, 0xdead);
+    g_assert_cmphex(qtest_readw(qts, output + 4 * 404), ==, 0xbeef);
+
+    qtest_quit(qts);
+}
+
 static void test_lcdc_jdi(void)
 {
     const uint32_t jdi_irq = (1U << 20) | (1U << 4);
@@ -1331,6 +1392,8 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/flash-backing", test_flash_backing);
     qtest_add_func("sf32lb52/epic", test_epic);
     qtest_add_func("sf32lb52/epic-obelix-l8", test_epic_obelix_l8);
+    qtest_add_func("sf32lb52/epic-obelix-hal-hv-mirror",
+                   test_epic_obelix_hal_hv_mirror);
     qtest_add_func("sf32lb52/lcdc-jdi", test_lcdc_jdi);
     qtest_add_func("sf32lb52/i2c1", test_i2c1);
     qtest_add_func("sf32lb52/obelix-i2c-devices", test_obelix_i2c_devices);

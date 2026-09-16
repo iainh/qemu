@@ -1270,6 +1270,9 @@ static void sf32lb52_epic_layer(SF32LB52MachineState *s,
                           EPIC_CFG_LINE_BYTES_MASK;
     uint32_t format = cfg & EPIC_CFG_FORMAT_MASK;
     unsigned int pixel_size = sf32lb52_epic_pixel_size(format);
+    uint32_t vl_misc = regs[EPIC_VL_MISC / 4];
+    uint32_t vl_extents = regs[EPIC_VL_EXTENTS / 4];
+    bool hal_hv_mirror;
 
     if (!(cfg & EPIC_CFG_ACTIVE) || !pixel_size || x1 < x0 || y1 < y0) {
         return;
@@ -1278,6 +1281,21 @@ static void sf32lb52_epic_layer(SF32LB52MachineState *s,
         qemu_log_mask(LOG_UNIMP,
                       "sf32lb52: EPIC arbitrary rotation is unsupported\n");
         return;
+    }
+
+    hal_hv_mirror = video &&
+        (vl_misc & (EPIC_VL_H_MIRROR | EPIC_VL_V_MIRROR)) ==
+        (EPIC_VL_H_MIRROR | EPIC_VL_V_MIRROR) &&
+        x0 == x1 && y0 == y1 && vl_extents == 0 &&
+        regs[EPIC_VL_SCALE_H / 4] == 1U << 16 &&
+        regs[EPIC_VL_SCALE_V / 4] == 1U << 16 &&
+        line_bytes == canvas_width * pixel_size;
+    if (hal_hv_mirror) {
+        /* The transform engine expands the HAL's collapsed H+V descriptor. */
+        x0 = canvas_x;
+        y0 = canvas_y;
+        x1 = canvas_x + canvas_width - 1;
+        y1 = canvas_y + canvas_height - 1;
     }
 
     for (uint32_t y = MAX(y0, canvas_y);
@@ -1292,8 +1310,13 @@ static void sf32lb52_epic_layer(SF32LB52MachineState *s,
             if (video) {
                 uint32_t pitch_x = regs[EPIC_VL_SCALE_H / 4] & 0x3ffffff;
                 uint32_t pitch_y = regs[EPIC_VL_SCALE_V / 4] & 0x3ffffff;
-                uint32_t max_x = regs[EPIC_VL_EXTENTS / 4] >> 16 & 0x3ff;
-                uint32_t max_y = regs[EPIC_VL_EXTENTS / 4] & 0x3ff;
+                uint32_t max_x = vl_extents >> 16 & 0x3ff;
+                uint32_t max_y = vl_extents & 0x3ff;
+
+                if (hal_hv_mirror) {
+                    max_x = canvas_width - 1;
+                    max_y = canvas_height - 1;
+                }
 
                 pitch_x = pitch_x ? pitch_x : 1U << 16;
                 pitch_y = pitch_y ? pitch_y : 1U << 16;
@@ -1301,10 +1324,10 @@ static void sf32lb52_epic_layer(SF32LB52MachineState *s,
                             regs[EPIC_VL_SCALE_INIT_H / 4]) >> 16;
                 source_y = ((uint64_t)source_y * pitch_y +
                             regs[EPIC_VL_SCALE_INIT_V / 4]) >> 16;
-                if (regs[EPIC_VL_MISC / 4] & EPIC_VL_H_MIRROR) {
+                if (vl_misc & EPIC_VL_H_MIRROR) {
                     source_x = max_x - MIN(source_x, max_x);
                 }
-                if (regs[EPIC_VL_MISC / 4] & EPIC_VL_V_MIRROR) {
+                if (vl_misc & EPIC_VL_V_MIRROR) {
                     source_y = max_y - MIN(source_y, max_y);
                 }
                 if (source_x > max_x || source_y > max_y) {
