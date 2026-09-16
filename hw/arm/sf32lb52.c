@@ -32,6 +32,7 @@
 #include "system/blockdev.h"
 #include "system/reset.h"
 #include "system/rtc.h"
+#include "system/runstate.h"
 #include "system/system.h"
 #include "qom/object.h"
 
@@ -248,6 +249,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define RTC_ISR                       0x0cb00c
 #define RTC_ALRMTR                    0x0cb018
 #define RTC_ALRMDR                    0x0cb01c
+#define RTC_BKP0R                     0x0cb030
+#define RTC_BACKUP_REGISTER_COUNT     10
 #define RTC_CR_ALRME                  (1U << 8)
 #define RTC_CR_ALRMIE                 (1U << 11)
 #define RTC_ISR_ALRMWF                (1U << 0)
@@ -277,6 +280,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define LPTIM_CR_CNTSTRT              (1U << 2)
 #define LPTIM_CR_COUNTRST             (1U << 3)
 #define LPTIM_FREQUENCY_HZ            10000
+#define PMUC_CR                       0x0ca000
+#define PMUC_CR_REBOOT                (1U << 2)
 #define GPTIM2_BASE                   0x0b0000
 #define GPTIM_CR1                     (GPTIM2_BASE + 0x00)
 #define GPTIM_DIER                    (GPTIM2_BASE + 0x0c)
@@ -420,6 +425,7 @@ struct SF32LB52MachineState {
     int64_t rtc_base_ns;
     int64_t rtc_base_seconds;
     int64_t lptim1_start_ns;
+    bool rtc_initialized;
     Clock *sysclk;
     Clock *refclk;
 };
@@ -1620,6 +1626,12 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
             }
         }
         switch (offset) {
+        case PMUC_CR:
+            r->regs[offset / 4] = value;
+            if (value & PMUC_CR_REBOOT) {
+                qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+            }
+            return;
         case GPTIM_CR1:
         case GPTIM_DIER:
         case GPTIM_PSC:
@@ -1831,7 +1843,13 @@ static const MemoryRegionOps sf32lb52_peripheral_ops = {
 static void sf32lb52_reset(void *opaque)
 {
     SF32LB52MachineState *s = opaque;
+    uint32_t rtc_backup[RTC_BACKUP_REGISTER_COUNT];
     struct tm tm;
+
+    if (s->rtc_initialized) {
+        memcpy(rtc_backup, &s->hpsys_periph.regs[RTC_BKP0R / 4],
+               sizeof(rtc_backup));
+    }
 
     s->dwt_ctrl = 0;
     s->dwt_cyccnt_base = 0;
@@ -1864,6 +1882,10 @@ static void sf32lb52_reset(void *opaque)
     s->hci_ready = false;
     memset(s->hpsys_periph.regs, 0, SF32LB52_PERIPH_SIZE);
     memset(s->lpsys_periph.regs, 0, SF32LB52_PERIPH_SIZE);
+    if (s->rtc_initialized) {
+        memcpy(&s->hpsys_periph.regs[RTC_BKP0R / 4], rtc_backup,
+               sizeof(rtc_backup));
+    }
     *sf32lb52_gpio_reg(s, OBELIX_TOUCH_INT_PIN, GPIO_DIR) |=
         1U << OBELIX_TOUCH_INT_PIN;
     *sf32lb52_gpio_reg(s, OBELIX_BUTTON_PIN_BASE, GPIO_DIR) |=
@@ -1913,9 +1935,12 @@ static void sf32lb52_reset(void *opaque)
     s->hpsys_periph.regs[EFUSEC_BANK0_DATA1 / 4] = 0xa575524c;
     s->hpsys_periph.regs[RTC_ISR / 4] =
         RTC_ISR_ALRMWF | RTC_ISR_WUTWF | RTC_ISR_RSF;
-    qemu_get_timedate(&tm, 0);
-    s->rtc_base_seconds = mktimegm(&tm);
-    s->rtc_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (!s->rtc_initialized) {
+        qemu_get_timedate(&tm, 0);
+        s->rtc_base_seconds = mktimegm(&tm);
+        s->rtc_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->rtc_initialized = true;
+    }
     s->lptim1_start_ns = s->rtc_base_ns;
 }
 

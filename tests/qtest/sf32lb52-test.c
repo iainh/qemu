@@ -79,6 +79,8 @@
 #define RTC_ISR            0x500cb00c
 #define RTC_ALRMTR         0x500cb018
 #define RTC_ALRMDR         0x500cb01c
+#define RTC_BKP2R          0x500cb038
+#define PMUC_CR            0x500ca000
 #define LPTIM1_ISR         0x500c1000
 #define LPTIM1_ICR         0x500c1004
 #define LPTIM1_IER         0x500c1008
@@ -165,6 +167,7 @@
 #define RTC_CR_ALRME       (1U << 8)
 #define RTC_CR_ALRMIE      (1U << 11)
 #define RTC_ISR_ALRMF      (1U << 1)
+#define PMUC_CR_REBOOT     (1U << 2)
 #define RTC_ALRMMASK_DATE  (1U << 27)
 #define RTC_ALRMMASK_MONTH (1U << 28)
 #define RTC_ALRMMASK_WDAY  (1U << 29)
@@ -392,6 +395,29 @@ static void test_gptim2(void)
     qtest_writel(qts, GPTIM2_SR, ~GPTIM_SR_UIF);
     qtest_clock_step(qts, 2 * G_TIME_SPAN_MILLISECOND * 1000);
     g_assert_cmphex(qtest_readl(qts, GPTIM2_SR) & GPTIM_SR_UIF, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_pmu_reboot(void)
+{
+    QTestState *qts = sf32lb52_start();
+
+    qtest_writel(qts, RTC_TR, rtc_time(12, 34, 58));
+    qtest_writel(qts, RTC_DR, rtc_date(26, 9, 16));
+    qtest_writel(qts, RTC_BKP2R, 0x12345678);
+    qtest_writel(qts, GPTIM2_PSC, 2399);
+    qtest_clock_step(qts, 2 * G_TIME_SPAN_SECOND * 1000);
+
+    qtest_writel(qts, PMUC_CR, PMUC_CR_REBOOT);
+    qtest_qmp_eventwait(qts, "RESET");
+
+    g_assert_cmphex(qtest_readl(qts, RTC_BKP2R), ==, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, RTC_TR) & ~0x3ff, ==,
+                    rtc_time(12, 35, 0));
+    g_assert_cmphex(qtest_readl(qts, RTC_DR) & 0x01ff1f3f, ==,
+                    rtc_date(26, 9, 16));
+    g_assert_cmphex(qtest_readl(qts, GPTIM2_PSC), ==, 0);
 
     qtest_quit(qts);
 }
@@ -849,6 +875,7 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/rtc-low-power-timer",
                    test_rtc_and_low_power_timer);
     qtest_add_func("sf32lb52/gptim2", test_gptim2);
+    qtest_add_func("sf32lb52/pmu-reboot", test_pmu_reboot);
     qtest_add_func("sf32lb52/dmac1-channel2", test_dmac1_channel2);
     qtest_add_func("sf32lb52/audio-dma", test_audio_dma);
     qtest_add_func("sf32lb52/flash-program-erase",
