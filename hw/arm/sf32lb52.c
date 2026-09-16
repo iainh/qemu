@@ -11,6 +11,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/error-report.h"
 #include "qemu/timer.h"
 #include "qemu/log.h"
 #include "qemu/units.h"
@@ -23,12 +24,16 @@
 #include "hw/qdev-properties-system.h"
 #include "hw/sysbus.h"
 #include "system/address-spaces.h"
+#include "system/block-backend.h"
+#include "system/blockdev.h"
 #include "system/reset.h"
 #include "system/system.h"
 #include "qom/object.h"
 
 #define TYPE_SF32LB52_MACHINE MACHINE_TYPE_NAME("sf32lb52")
 OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52MachineState, SF32LB52_MACHINE)
+#define TYPE_SF32LB52_FLASH "sf32lb52-flash"
+OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 
 #define SF32LB52_HPSYS_ROM_BASE       0x00000000
 #define SF32LB52_HPSYS_ROM_SIZE       (64 * KiB)
@@ -188,6 +193,11 @@ typedef struct SF32LB52I2CState {
     uint8_t data[128][256];
 } SF32LB52I2CState;
 
+struct SF32LB52FlashState {
+    DeviceState parent_obj;
+    BlockBackend *blk;
+};
+
 struct SF32LB52MachineState {
     MachineState parent_obj;
     ARMv7MState armv7m;
@@ -201,6 +211,8 @@ struct SF32LB52MachineState {
     SF32LB52PeripheralRegion hpsys_periph;
     SF32LB52PeripheralRegion lpsys_periph;
     SF32LB52I2CState i2c[4];
+    BlockBackend *flash_blk;
+    uint32_t flash_backed_size;
     uint32_t dwt_ctrl;
     uint32_t dwt_cyccnt_base;
     uint32_t rng_state;
@@ -338,6 +350,24 @@ static bool sf32lb52_dmac_write(SF32LB52MachineState *s, uint32_t *regs,
     return false;
 }
 
+static void sf32lb52_flash_flush(SF32LB52MachineState *s, uint32_t address,
+                                 uint32_t length)
+{
+    uint8_t *flash;
+
+    if (!s->flash_blk || !blk_is_writable(s->flash_blk) ||
+        address >= s->flash_backed_size) {
+        return;
+    }
+    length = MIN(length, s->flash_backed_size - address);
+    flash = memory_region_get_ram_ptr(&s->flash);
+    if (blk_pwrite(s->flash_blk, address, length, flash + address, 0) < 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sf32lb52: failed to persist flash write at 0x%08x\n",
+                      address);
+    }
+}
+
 static void sf32lb52_flash_command(SF32LB52MachineState *s, uint32_t command)
 {
     uint32_t *regs = s->hpsys_periph.regs;
@@ -377,6 +407,7 @@ static void sf32lb52_flash_command(SF32LB52MachineState *s, uint32_t command)
                     for (uint32_t i = 0; i < count; i++) {
                         flash[address + i] &= data[i];
                     }
+                    sf32lb52_flash_flush(s, address, count);
                 }
                 s->dmac_count[channel] = 0;
                 break;
@@ -391,6 +422,9 @@ static void sf32lb52_flash_command(SF32LB52MachineState *s, uint32_t command)
         address &= ~(erase_size - 1);
         memset(flash + address, 0xff,
                MIN(erase_size, SF32LB52_FLASH_SIZE - address));
+        sf32lb52_flash_flush(s, address,
+                             MIN(erase_size,
+                                 SF32LB52_FLASH_SIZE - address));
     }
 }
 
@@ -674,8 +708,10 @@ static void sf32lb52_machine_init(MachineState *machine)
     SF32LB52MachineState *s = SF32LB52_MACHINE(machine);
     MemoryRegion *system_memory = get_system_memory();
     DeviceState *armv7m;
+    DeviceState *flash_dev;
     DeviceState *usart;
     SysBusDevice *usart_sbd;
+    DriveInfo *dinfo;
     static const int i2c_irq[] = {
         SF32LB52_I2C1_IRQ,
         SF32LB52_I2C2_IRQ,
@@ -704,6 +740,35 @@ static void sf32lb52_machine_init(MachineState *machine)
     memory_region_init_ram(&s->flash, NULL, "sf32lb52.flash",
                            SF32LB52_FLASH_SIZE, &error_fatal);
     memset(memory_region_get_ram_ptr(&s->flash), 0xff, SF32LB52_FLASH_SIZE);
+    dinfo = drive_get(IF_MTD, 0, 0);
+    if (dinfo) {
+        int64_t length;
+        uint64_t perm = BLK_PERM_CONSISTENT_READ;
+
+        s->flash_blk = blk_by_legacy_dinfo(dinfo);
+        flash_dev = qdev_new(TYPE_SF32LB52_FLASH);
+        qdev_prop_set_drive(flash_dev, "drive", s->flash_blk);
+        qdev_realize_and_unref(flash_dev, NULL, &error_fatal);
+        if (blk_supports_write_perm(s->flash_blk)) {
+            perm |= BLK_PERM_WRITE;
+        }
+        if (blk_set_perm(s->flash_blk, perm, BLK_PERM_ALL,
+                         &error_fatal) < 0) {
+            exit(EXIT_FAILURE);
+        }
+        length = blk_getlength(s->flash_blk);
+        if (length < 0) {
+            error_report("sf32lb52: failed to get external flash size");
+            exit(EXIT_FAILURE);
+        }
+        s->flash_backed_size = MIN(length, SF32LB52_FLASH_SIZE);
+        if (s->flash_backed_size &&
+            blk_pread(s->flash_blk, 0, s->flash_backed_size,
+                      memory_region_get_ram_ptr(&s->flash), 0) < 0) {
+            error_report("sf32lb52: failed to load external flash image");
+            exit(EXIT_FAILURE);
+        }
+    }
     memory_region_set_readonly(&s->flash, true);
     memory_region_add_subregion(system_memory, SF32LB52_FLASH_BASE, &s->flash);
 
@@ -779,6 +844,26 @@ static void sf32lb52_machine_class_init(ObjectClass *oc, const void *data)
     mc->ignore_memory_transaction_failures = false;
 }
 
+static const Property sf32lb52_flash_properties[] = {
+    DEFINE_PROP_DRIVE("drive", SF32LB52FlashState, blk),
+};
+
+static void sf32lb52_flash_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    device_class_set_props(dc, sf32lb52_flash_properties);
+    set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
+    dc->desc = "SiFli SF32LB52 external flash backing";
+}
+
+static const TypeInfo sf32lb52_flash_info = {
+    .name = TYPE_SF32LB52_FLASH,
+    .parent = TYPE_DEVICE,
+    .instance_size = sizeof(SF32LB52FlashState),
+    .class_init = sf32lb52_flash_class_init,
+};
+
 static const TypeInfo sf32lb52_machine_info = {
     .name = TYPE_SF32LB52_MACHINE,
     .parent = TYPE_MACHINE,
@@ -788,6 +873,7 @@ static const TypeInfo sf32lb52_machine_info = {
 
 static void sf32lb52_machine_register_types(void)
 {
+    type_register_static(&sf32lb52_flash_info);
     type_register_static(&sf32lb52_machine_info);
 }
 

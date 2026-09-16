@@ -6,6 +6,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "libqtest.h"
 
 #define HPSYS_RAM_BASE     0x20000000
@@ -106,6 +107,12 @@
 static QTestState *sf32lb52_start(void)
 {
     return qtest_init("-machine sf32lb52 -display none -serial null");
+}
+
+static QTestState *sf32lb52_start_with_flash(const char *path)
+{
+    return qtest_initf("-machine sf32lb52 -display none -serial null "
+                       "-drive if=mtd,format=raw,file=%s", path);
 }
 
 static void test_memory(void)
@@ -249,6 +256,45 @@ static void test_flash_program_and_erase(void)
     qtest_quit(qts);
 }
 
+static void test_flash_backing(void)
+{
+    const uint32_t flash_offset = 0x1000000;
+    const uint32_t initial = 0x12345678;
+    const uint32_t programmed = 0xa55ac33c;
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    uint32_t persisted;
+    int fd;
+
+    fd = g_file_open_tmp("sf32lb52-flash-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 32 * MiB), ==, 0);
+    g_assert_cmpint(pwrite(fd, &initial, sizeof(initial), flash_offset), ==,
+                    sizeof(initial));
+    close(fd);
+
+    qts = sf32lb52_start_with_flash(path);
+    g_assert_cmphex(qtest_readl(qts, 0x12000000 + flash_offset), ==,
+                    initial);
+    qtest_writel(qts, MPI2_AR1, flash_offset);
+    qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_SE);
+    qtest_writel(qts, HPSYS_RAM_BASE, programmed);
+    qtest_writel(qts, DMAC1_CNDTR2, sizeof(programmed));
+    qtest_writel(qts, DMAC1_CPAR2, MPI2_DR);
+    qtest_writel(qts, DMAC1_CM0AR2, HPSYS_RAM_BASE);
+    qtest_writel(qts, DMAC1_CCR2, DMAC_CCR_EN);
+    qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_QPP);
+    qtest_quit(qts);
+
+    fd = open(path, O_RDONLY);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pread(fd, &persisted, sizeof(persisted), flash_offset), ==,
+                    sizeof(persisted));
+    close(fd);
+    g_assert_cmphex(persisted, ==, programmed);
+    unlink(path);
+}
+
 static void test_i2c1(void)
 {
     QTestState *qts = sf32lb52_start();
@@ -369,6 +415,7 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/dmac1-channel2", test_dmac1_channel2);
     qtest_add_func("sf32lb52/flash-program-erase",
                    test_flash_program_and_erase);
+    qtest_add_func("sf32lb52/flash-backing", test_flash_backing);
     qtest_add_func("sf32lb52/i2c1", test_i2c1);
     qtest_add_func("sf32lb52/obelix-i2c-devices", test_obelix_i2c_devices);
     qtest_add_func("sf32lb52/usart1", test_usart1);

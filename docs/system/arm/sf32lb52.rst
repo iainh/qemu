@@ -12,7 +12,8 @@ The machine provides:
 
 - Cortex-M33 HCPU with 96 external interrupts and 3 priority bits
 - HPSYS and LPSYS SRAM
-- external flash with the PebbleOS slot 0 vector-table alias
+- external flash with persistent image backing and the PebbleOS slot 0
+  vector-table alias
 - DWT cycle counter
 - startup clock, eFuse, RTC, TRNG, watchdog, I2C reset, audio PLL calibration,
   and MPI flash handshakes
@@ -36,7 +37,13 @@ example:
 .. code-block:: shell
 
   qemu-system-arm -M sf32lb52 -display none \
-      -serial stdio -kernel build/pebbleos.elf
+      -serial stdio -kernel build/pebbleos.elf \
+      -drive if=mtd,format=raw,file=obelix-resources.bin
 
 The machine aliases the slot 0 vector table at external flash offset
 ``0x21000`` to address zero for reset.
+
+The optional MTD image initializes the external flash and receives guest
+program and erase operations. Use a 32 MiB image to back the complete
+GD25Q256E address space, including the Pebble filesystem near the end of the
+device. Bytes beyond a shorter image remain erased and are not persisted.
