@@ -22,9 +22,10 @@ The machine provides:
   compass, backlight, and ambient-light drivers
 - DMAC transfer completion and DMA-backed external flash page programming
 - 4 KiB sector and 32/64 KiB block erase commands
+- LCDC1 JDI transfers to the 200x228 RGB332 Obelix display
 - USART1 connected to the first QEMU serial backend
 
-The LCPU, Bluetooth, display, DMA data movement outside MPI flash writes, and
+The LCPU, Bluetooth, DMA data movement outside MPI flash and LCDC writes, and
 most peripherals are not implemented. Unimplemented peripheral registers
 retain their values to support incremental firmware bring-up.
 

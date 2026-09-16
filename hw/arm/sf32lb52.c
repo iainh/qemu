@@ -19,6 +19,7 @@
 #include "hw/arm/armv7m.h"
 #include "hw/arm/boot.h"
 #include "hw/boards.h"
+#include "hw/display/pebble_display.h"
 #include "hw/irq.h"
 #include "hw/qdev-clock.h"
 #include "hw/qdev-properties-system.h"
@@ -49,6 +50,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define SF32LB52_HPSYS_PERIPH_BASE    0x50000000
 #define SF32LB52_USART1_BASE          0x50084000
 #define SF32LB52_USART1_IRQ           59
+#define SF32LB52_LCDC1_IRQ            63
 #define SF32LB52_I2C1_IRQ             61
 #define SF32LB52_I2C2_IRQ             76
 #define SF32LB52_I2C4_IRQ             78
@@ -161,6 +163,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define RTC_ISR_RSF                   (1U << 7)
 #define RTC_ISR_INITF                 (1U << 9)
 #define RTC_ISR_INIT                  (1U << 10)
+#define LCDC1_BASE                    0x008000
+#define LCDC_IRQ                      (LCDC1_BASE + 0x008)
+#define LCDC_SETTING                  (LCDC1_BASE + 0x00c)
+#define LCDC_CANVAS_TL_POS            (LCDC1_BASE + 0x010)
+#define LCDC_CANVAS_BR_POS            (LCDC1_BASE + 0x014)
+#define LCDC_LAYER0_SRC               (LCDC1_BASE + 0x02c)
+#define LCDC_JDI_PAR_CTRL             (LCDC1_BASE + 0x0ec)
+#define LCDC_JDI_PAR_CTRL_ENABLE      (1U << 0)
+#define LCDC_IRQ_EOF_STAT             (1U << 0)
+#define LCDC_IRQ_JDI_STAT             (1U << 4)
+#define LCDC_IRQ_EOF_RAW_STAT         (1U << 16)
+#define LCDC_IRQ_JDI_RAW_STAT         (1U << 20)
 #define HPSYS_AON_ACR                 0x0c0010
 #define HPSYS_AON_ISSR                0x0c002c
 #define HPSYS_AON_ACR_HRC48_REQ       (1U << 0)
@@ -211,8 +225,12 @@ struct SF32LB52MachineState {
     SF32LB52PeripheralRegion hpsys_periph;
     SF32LB52PeripheralRegion lpsys_periph;
     SF32LB52I2CState i2c[4];
+    DeviceState *display;
+    qemu_irq lcdc_irq;
+    QEMUTimer *lcdc_timer;
     BlockBackend *flash_blk;
     uint32_t flash_backed_size;
+    uint8_t lcdc_phase;
     uint32_t dwt_ctrl;
     uint32_t dwt_cyccnt_base;
     uint32_t rng_state;
@@ -365,6 +383,70 @@ static void sf32lb52_flash_flush(SF32LB52MachineState *s, uint32_t address,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sf32lb52: failed to persist flash write at 0x%08x\n",
                       address);
+    }
+}
+
+static void sf32lb52_lcdc_update_irq(SF32LB52MachineState *s)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+
+    qemu_set_irq(s->lcdc_irq, regs[LCDC_IRQ / 4] & 0x7f);
+}
+
+static void sf32lb52_lcdc_timer(void *opaque)
+{
+    SF32LB52MachineState *s = opaque;
+    uint32_t *regs = s->hpsys_periph.regs;
+    uint32_t setting = regs[LCDC_SETTING / 4];
+
+    if (s->lcdc_phase < 3) {
+        regs[LCDC_IRQ / 4] |= LCDC_IRQ_JDI_RAW_STAT;
+        if (setting & LCDC_IRQ_JDI_STAT) {
+            regs[LCDC_IRQ / 4] |= LCDC_IRQ_JDI_STAT;
+        }
+        s->lcdc_phase++;
+    } else {
+        regs[LCDC_IRQ / 4] |= LCDC_IRQ_EOF_RAW_STAT;
+        if (setting & LCDC_IRQ_EOF_STAT) {
+            regs[LCDC_IRQ / 4] |= LCDC_IRQ_EOF_STAT;
+        }
+        s->lcdc_phase = 4;
+    }
+    sf32lb52_lcdc_update_irq(s);
+}
+
+static void sf32lb52_lcdc_copy_framebuffer(SF32LB52MachineState *s)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+    uint32_t tl = regs[LCDC_CANVAS_TL_POS / 4];
+    uint32_t br = regs[LCDC_CANVAS_BR_POS / 4];
+    uint32_t x = tl & 0x7ff;
+    uint32_t y = (tl >> 16) & 0x7ff;
+    uint32_t width = (br & 0x7ff) - x + 1;
+    uint32_t doubled_height = ((br >> 16) & 0x7ff) - y + 1;
+    uint32_t source = regs[LCDC_LAYER0_SRC / 4];
+    g_autofree uint8_t *pixels = NULL;
+
+    if (x >= 200 || y >= 228 || width > 200 - x ||
+        doubled_height < 2 || doubled_height / 2 > 228 - y) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sf32lb52: invalid LCDC rectangle %u,%u %ux%u\n",
+                      x, y, width, doubled_height / 2);
+        return;
+    }
+    pixels = g_malloc(width * doubled_height / 2);
+    if (address_space_read(&address_space_memory, source,
+                           MEMTXATTRS_UNSPECIFIED, pixels,
+                           width * doubled_height / 2) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sf32lb52: LCDC source read failed at 0x%08x\n",
+                      source);
+        return;
+    }
+    for (uint32_t row = 0; row < doubled_height / 2; row++) {
+        pbl_display_update_framebuffer(s->display,
+                                       (y + row) * 200 + x,
+                                       pixels + row * width, width);
     }
 }
 
@@ -537,6 +619,28 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
             }
         }
         switch (offset) {
+        case LCDC_IRQ:
+            r->regs[LCDC_IRQ / 4] &= ~value;
+            sf32lb52_lcdc_update_irq(s);
+            if ((value & (LCDC_IRQ_JDI_STAT | LCDC_IRQ_JDI_RAW_STAT)) &&
+                (s->lcdc_phase == 2 || s->lcdc_phase == 3)) {
+                timer_mod(s->lcdc_timer,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000);
+            } else if ((value & (LCDC_IRQ_EOF_STAT |
+                                 LCDC_IRQ_EOF_RAW_STAT)) &&
+                       s->lcdc_phase == 4) {
+                s->lcdc_phase = 0;
+            }
+            return;
+        case LCDC_JDI_PAR_CTRL:
+            if ((value & LCDC_JDI_PAR_CTRL_ENABLE) &&
+                !(r->regs[offset / 4] & LCDC_JDI_PAR_CTRL_ENABLE)) {
+                sf32lb52_lcdc_copy_framebuffer(s);
+                s->lcdc_phase = 1;
+                timer_mod(s->lcdc_timer,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000);
+            }
+            break;
         case EFUSEC_CR:
             if (value & EFUSEC_CR_EN) {
                 r->regs[EFUSEC_SR / 4] |= EFUSEC_SR_DONE;
@@ -657,6 +761,9 @@ static void sf32lb52_reset(void *opaque)
     s->dwt_cyccnt_base = 0;
     s->dwt_cyccnt_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->rng_state = 0x6d2b79f5;
+    s->lcdc_phase = 0;
+    timer_del(s->lcdc_timer);
+    qemu_irq_lower(s->lcdc_irq);
     memset(s->dmac_count, 0, sizeof(s->dmac_count));
     memset(s->dmac_periph, 0, sizeof(s->dmac_periph));
     memset(s->dmac_memory, 0, sizeof(s->dmac_memory));
@@ -811,6 +918,16 @@ static void sf32lb52_machine_init(MachineState *machine)
     for (int i = 0; i < ARRAY_SIZE(s->i2c); i++) {
         s->i2c[i].irq = qdev_get_gpio_in(armv7m, i2c_irq[i]);
     }
+    s->lcdc_irq = qdev_get_gpio_in(armv7m, SF32LB52_LCDC1_IRQ);
+    s->lcdc_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                 sf32lb52_lcdc_timer, s);
+
+    s->display = qdev_new(TYPE_PEBBLE_DISPLAY);
+    qdev_prop_set_uint32(s->display, "width", 200);
+    qdev_prop_set_uint32(s->display, "height", 228);
+    qdev_prop_set_uint32(s->display, "format",
+                         PEBBLE_DISPLAY_FORMAT_RGB332);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(s->display), &error_fatal);
 
     usart = qdev_new("sf32lb52-usart");
     qdev_prop_set_chr(usart, "chardev", serial_hd(0));

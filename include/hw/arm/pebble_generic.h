@@ -28,7 +28,6 @@
 #define TYPE_PEBBLE_SYSCTRL       "pebble-sysctrl"
 #define TYPE_PEBBLE_GENERIC_RTC   "pebble-rtc"
 #define TYPE_PEBBLE_GENERIC_TIMER "pebble-timer"
-#define TYPE_PEBBLE_DISPLAY       "pebble-display"
 #define TYPE_PEBBLE_EXTFLASH      "pebble-extflash"
 #define TYPE_PEBBLE_GPIO          "pebble-gpio"
 #define TYPE_PEBBLE_TOUCH         "pebble-touch"

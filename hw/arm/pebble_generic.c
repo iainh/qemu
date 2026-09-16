@@ -20,6 +20,7 @@
 #include "hw/arm/armv7m.h"
 #include "hw/arm/boot.h"
 #include "hw/boards.h"
+#include "hw/display/pebble_display.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-properties-system.h"
 #include "hw/qdev-clock.h"

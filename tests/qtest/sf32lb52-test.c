@@ -24,6 +24,12 @@
 #define TRNG_CTRL          0x5000f000
 #define TRNG_STAT          0x5000f004
 #define TRNG_RAND_NUM0     0x5000f030
+#define LCDC1_IRQ          0x50008008
+#define LCDC1_SETTING      0x5000800c
+#define LCDC1_CANVAS_TL    0x50008010
+#define LCDC1_CANVAS_BR    0x50008014
+#define LCDC1_LAYER0_SRC   0x5000802c
+#define LCDC1_JDI_CTRL     0x500080ec
 #define WDT1_CCR           0x5009400c
 #define WDT1_SR            0x50094014
 #define DMAC1_ISR          0x50081000
@@ -295,6 +301,33 @@ static void test_flash_backing(void)
     unlink(path);
 }
 
+static void test_lcdc_jdi(void)
+{
+    const uint32_t jdi_irq = (1U << 20) | (1U << 4);
+    const uint32_t eof_irq = (1U << 16) | (1U << 0);
+    QTestState *qts = sf32lb52_start();
+
+    qtest_memset(qts, HPSYS_RAM_BASE, 0xe0, 200 * 2);
+    qtest_writel(qts, LCDC1_CANVAS_TL, 0);
+    qtest_writel(qts, LCDC1_CANVAS_BR, (3U << 16) | 199);
+    qtest_writel(qts, LCDC1_LAYER0_SRC, HPSYS_RAM_BASE);
+    qtest_writel(qts, LCDC1_SETTING, (1U << 4) | (1U << 0));
+    qtest_writel(qts, LCDC1_JDI_CTRL, 1);
+
+    qtest_clock_step(qts, 1000);
+    g_assert_cmphex(qtest_readl(qts, LCDC1_IRQ), ==, jdi_irq);
+    qtest_writel(qts, LCDC1_IRQ, jdi_irq);
+    qtest_clock_step(qts, 1000);
+    g_assert_cmphex(qtest_readl(qts, LCDC1_IRQ), ==, jdi_irq);
+    qtest_writel(qts, LCDC1_IRQ, jdi_irq);
+    qtest_clock_step(qts, 1000);
+    g_assert_cmphex(qtest_readl(qts, LCDC1_IRQ), ==, eof_irq);
+    qtest_writel(qts, LCDC1_IRQ, eof_irq);
+    g_assert_cmphex(qtest_readl(qts, LCDC1_IRQ), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_i2c1(void)
 {
     QTestState *qts = sf32lb52_start();
@@ -416,6 +449,7 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/flash-program-erase",
                    test_flash_program_and_erase);
     qtest_add_func("sf32lb52/flash-backing", test_flash_backing);
+    qtest_add_func("sf32lb52/lcdc-jdi", test_lcdc_jdi);
     qtest_add_func("sf32lb52/i2c1", test_i2c1);
     qtest_add_func("sf32lb52/obelix-i2c-devices", test_obelix_i2c_devices);
     qtest_add_func("sf32lb52/usart1", test_usart1);

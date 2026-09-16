@@ -13,6 +13,7 @@
  * Supported formats:
  *   1bpp - monochrome (1 bit per pixel, MSB first, row-major)
  *   8bpp - ARGB2222 (2 bits A, 2 bits R, 3 bits G, 2 bits B)
+ *   RGB332 - 3 bits red, 3 bits green, 2 bits blue
  *
  * Control Registers:
  *   0x00 CTRL       - Bit 0: enable, Bit 1: update request (write-1-to-set)
@@ -36,12 +37,12 @@
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "hw/irq.h"
+#include "hw/display/pebble_display.h"
 #include "hw/sysbus.h"
 #include "hw/qdev-properties.h"
 #include "ui/console.h"
 #include "ui/pixel_ops.h"
 
-#define TYPE_PEBBLE_DISPLAY "pebble-display"
 OBJECT_DECLARE_SIMPLE_TYPE(PblDisplay, PEBBLE_DISPLAY)
 
 /* Register offsets */
@@ -129,6 +130,16 @@ static void argb2222_to_rgb(uint8_t pixel, uint8_t *r, uint8_t *g, uint8_t *b)
     *b = (*b << 6) | (*b << 4) | (*b << 2) | *b;
 }
 
+static void rgb332_to_rgb(uint8_t pixel, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    *r = (pixel >> 6) & 0x3;
+    *r = (*r << 6) | (*r << 4) | (*r << 2) | *r;
+    *g = (pixel >> 3) & 0x3;
+    *g = (*g << 6) | (*g << 4) | (*g << 2) | *g;
+    *b = pixel & 0x03;
+    *b = (*b << 6) | (*b << 4) | (*b << 2) | *b;
+}
+
 /* Check if a pixel is inside the circular display area */
 static bool pixel_in_round_mask(int x, int y, int w, int h)
 {
@@ -194,6 +205,10 @@ static void pbl_display_update(void *opaque)
                 /* on=1 means white pixel, on=0 means black in PebbleOS 1bpp */
                 uint8_t level = on ? (s->brightness ? s->brightness : 0xFF) : 0;
                 r = g = b = level;
+            } else if (s->format == PEBBLE_DISPLAY_FORMAT_RGB332) {
+                uint32_t idx = y * s->width + src_x;
+
+                rgb332_to_rgb(s->fb[idx], &r, &g, &b);
             } else {
                 /* 8bpp ARGB2222 */
                 uint32_t idx = y * s->width + src_x;
@@ -258,6 +273,21 @@ static void pbl_display_update(void *opaque)
     }
 
     dpy_gfx_update(s->con, 0, 0, s->width, s->height);
+}
+
+void pbl_display_update_framebuffer(DeviceState *dev, uint32_t offset,
+                                    const uint8_t *pixels, uint32_t length)
+{
+    PblDisplay *s = PEBBLE_DISPLAY(dev);
+
+    if (offset >= s->fb_size) {
+        return;
+    }
+    length = MIN(length, s->fb_size - offset);
+    memcpy(s->fb + offset, pixels, length);
+    s->ctrl |= CTRL_ENABLE;
+    s->redraw = true;
+    graphic_hw_update(s->con);
 }
 
 static void pbl_display_invalidate(void *opaque)
