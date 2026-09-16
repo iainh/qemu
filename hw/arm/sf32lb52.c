@@ -104,6 +104,23 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 
 #define HPSYS_RCC_HRCCAL1             0x000034
 #define HPSYS_RCC_HRCCAL2             0x000038
+#define HPSYS_RCC_RSTR1               0x000000
+#define HPSYS_RCC_RSTR2               0x000004
+#define HPSYS_RCC_ENR1                0x000008
+#define HPSYS_RCC_ENR2                0x00000c
+#define HPSYS_RCC_ESR1                0x000010
+#define HPSYS_RCC_ESR2                0x000014
+#define HPSYS_RCC_ECR1                0x000018
+#define HPSYS_RCC_ECR2                0x00001c
+#define HPSYS_RCC_DMAC1               (1U << 0)
+#define HPSYS_RCC_LCDC1               (1U << 7)
+#define HPSYS_RCC_GPTIM2              (1U << 16)
+#define HPSYS_RCC_I2C1                (1U << 27)
+#define HPSYS_RCC_I2C2                (1U << 28)
+#define HPSYS_RCC_GPIO1               (1U << 0)
+#define HPSYS_RCC_MPI2                (1U << 2)
+#define HPSYS_RCC_I2C3                (1U << 8)
+#define HPSYS_RCC_I2C4                (1U << 25)
 #define HPSYS_RCC_HRCCAL1_CAL_EN      (1U << 30)
 #define HPSYS_RCC_HRCCAL1_CAL_DONE    (1U << 31)
 #define HPSYS_RCC_DLL1CR              0x00002c
@@ -446,9 +463,22 @@ static uint32_t *sf32lb52_gpio_reg(SF32LB52MachineState *s, unsigned int pin,
     return &s->hpsys_periph.regs[offset / 4];
 }
 
+static bool sf32lb52_hpsys_clock_enabled(SF32LB52MachineState *s,
+                                         unsigned int group, uint32_t mask)
+{
+    hwaddr enr = group == 1 ? HPSYS_RCC_ENR1 : HPSYS_RCC_ENR2;
+
+    return s->hpsys_periph.regs[enr / 4] & mask;
+}
+
 static void sf32lb52_gpio_update_irq(SF32LB52MachineState *s)
 {
     uint32_t pending = 0;
+
+    if (!sf32lb52_hpsys_clock_enabled(s, 2, HPSYS_RCC_GPIO1)) {
+        qemu_irq_lower(s->gpio1_irq);
+        return;
+    }
 
     for (int bank = 0; bank < 2; bank++) {
         uint32_t *ier = sf32lb52_gpio_reg(s, bank * 32, GPIO_IER);
@@ -668,10 +698,18 @@ static void sf32lb52_i2c_update_irq(SF32LB52MachineState *s, int index)
 static void sf32lb52_i2c_transfer(SF32LB52MachineState *s, int index,
                                   hwaddr base, uint32_t value)
 {
+    static const uint32_t clock_mask[] = {
+        HPSYS_RCC_I2C1, HPSYS_RCC_I2C2,
+        HPSYS_RCC_I2C3, HPSYS_RCC_I2C4,
+    };
     SF32LB52I2CState *i2c = &s->i2c[index];
     uint32_t *regs = s->hpsys_periph.regs;
     uint32_t status = I2C_SR_TE;
 
+    if (!sf32lb52_hpsys_clock_enabled(s, index < 2 ? 1 : 2,
+                                      clock_mask[index])) {
+        return;
+    }
     if (!(value & I2C_TCR_TB)) {
         return;
     }
@@ -881,6 +919,11 @@ static bool sf32lb52_dmac_write(SF32LB52MachineState *s, uint32_t *regs,
         } else if (offset == ccr && (value & DMAC_CCR_EN)) {
             uint32_t shift = channel * 4;
 
+            if (!sf32lb52_hpsys_clock_enabled(s, 1, HPSYS_RCC_DMAC1)) {
+                *result &= ~DMAC_CCR_EN;
+                break;
+            }
+
             s->dmac_count[channel] =
                 regs[(DMAC1_CNDTR1 + channel * DMAC_CHANNEL_STRIDE) / 4];
             s->dmac_periph[channel] =
@@ -1089,6 +1132,9 @@ static void sf32lb52_mpi2_start(SF32LB52MachineState *s, uint32_t command)
 {
     uint32_t *regs = s->hpsys_periph.regs;
 
+    if (!sf32lb52_hpsys_clock_enabled(s, 2, HPSYS_RCC_MPI2)) {
+        return;
+    }
     if (regs[MPI2_SR / 4] & MPI_SR_BUSY) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sf32lb52: MPI2 command 0x%02x while busy\n",
@@ -1281,7 +1327,8 @@ static void sf32lb52_gptim2_schedule(SF32LB52MachineState *s)
     uint32_t *regs = s->hpsys_periph.regs;
 
     if ((regs[GPTIM_CR1 / 4] & GPTIM_CR1_CEN) &&
-        (regs[GPTIM_DIER / 4] & GPTIM_DIER_UIE)) {
+        (regs[GPTIM_DIER / 4] & GPTIM_DIER_UIE) &&
+        sf32lb52_hpsys_clock_enabled(s, 1, HPSYS_RCC_GPTIM2)) {
         timer_mod(s->gptim2_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                   sf32lb52_gptim2_period_ns(s));
@@ -1560,6 +1607,121 @@ static uint32_t sf32lb52_bt_rfc_count(SF32LB52MachineState *s)
     return (edr ? 38800 : 39000) - 40 * pdx + 20 * fcw;
 }
 
+static void sf32lb52_rcc_reset_i2c(SF32LB52MachineState *s, int index,
+                                   hwaddr base)
+{
+    SF32LB52I2CState *i2c = &s->i2c[index];
+
+    memset(&s->hpsys_periph.regs[base / 4], 0, I2C_REG_SIZE);
+    i2c->address = 0;
+    i2c->reg = 0;
+    i2c->reg_bytes = 0;
+    i2c->addressed = false;
+    i2c->read = false;
+    i2c->have_reg = false;
+    qemu_irq_lower(i2c->irq);
+}
+
+static void sf32lb52_rcc_reset_modules(SF32LB52MachineState *s,
+                                       unsigned int group, uint32_t reset)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+
+    if (group == 1) {
+        if (reset & HPSYS_RCC_DMAC1) {
+            memset(&regs[DMAC1_ISR / 4], 0, 0x100);
+            for (int channel = 0; channel < DMAC_CHANNEL_COUNT; channel++) {
+                timer_del(s->dmac_timer[channel]);
+                qemu_irq_lower(s->dmac1_irq[channel]);
+            }
+        }
+        if (reset & HPSYS_RCC_LCDC1) {
+            memset(&regs[LCDC1_BASE / 4], 0, 0x100);
+            timer_del(s->lcdc_timer);
+            qemu_irq_lower(s->lcdc_irq);
+            s->lcdc_phase = 0;
+        }
+        if (reset & HPSYS_RCC_GPTIM2) {
+            memset(&regs[GPTIM2_BASE / 4], 0, 0x40);
+            timer_del(s->gptim2_timer);
+            qemu_irq_lower(s->gptim2_irq);
+        }
+        if (reset & HPSYS_RCC_I2C1) {
+            sf32lb52_rcc_reset_i2c(s, 0, I2C1_CR);
+        }
+        if (reset & HPSYS_RCC_I2C2) {
+            sf32lb52_rcc_reset_i2c(s, 1, I2C2_CR);
+        }
+    } else {
+        if (reset & HPSYS_RCC_GPIO1) {
+            memset(&regs[GPIO1_BASE / 4], 0, 2 * GPIO_BANK_STRIDE);
+            qemu_irq_lower(s->gpio1_irq);
+        }
+        if (reset & HPSYS_RCC_MPI2) {
+            memset(&regs[MPI2_CR / 4], 0, 0x100);
+            timer_del(s->mpi2_timer);
+        }
+        if (reset & HPSYS_RCC_I2C3) {
+            sf32lb52_rcc_reset_i2c(s, 2, I2C3_CR);
+        }
+        if (reset & HPSYS_RCC_I2C4) {
+            sf32lb52_rcc_reset_i2c(s, 3, I2C4_CR);
+        }
+    }
+}
+
+static void sf32lb52_rcc_clock_changed(SF32LB52MachineState *s)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+
+    sf32lb52_gptim2_schedule(s);
+    if (!(regs[HPSYS_RCC_ENR2 / 4] & HPSYS_RCC_MPI2)) {
+        timer_del(s->mpi2_timer);
+    } else if ((regs[MPI2_SR / 4] & MPI_SR_BUSY) &&
+               !timer_pending(s->mpi2_timer)) {
+        timer_mod(s->mpi2_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  sf32lb52_flash_command_time(s->mpi2_command));
+    }
+    sf32lb52_gpio_update_irq(s);
+}
+
+static bool sf32lb52_rcc_write(SF32LB52MachineState *s, hwaddr offset,
+                               uint32_t value)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+    hwaddr enr;
+
+    switch (offset) {
+    case HPSYS_RCC_RSTR1:
+    case HPSYS_RCC_RSTR2:
+        sf32lb52_rcc_reset_modules(s,
+            offset == HPSYS_RCC_RSTR1 ? 1 : 2,
+            value & ~regs[offset / 4]);
+        regs[offset / 4] = value;
+        return true;
+    case HPSYS_RCC_ENR1:
+    case HPSYS_RCC_ENR2:
+        regs[offset / 4] = value;
+        sf32lb52_rcc_clock_changed(s);
+        return true;
+    case HPSYS_RCC_ESR1:
+    case HPSYS_RCC_ESR2:
+        enr = offset == HPSYS_RCC_ESR1 ? HPSYS_RCC_ENR1 : HPSYS_RCC_ENR2;
+        regs[enr / 4] |= value;
+        sf32lb52_rcc_clock_changed(s);
+        return true;
+    case HPSYS_RCC_ECR1:
+    case HPSYS_RCC_ECR2:
+        enr = offset == HPSYS_RCC_ECR1 ? HPSYS_RCC_ENR1 : HPSYS_RCC_ENR2;
+        regs[enr / 4] &= ~value;
+        sf32lb52_rcc_clock_changed(s);
+        return true;
+    default:
+        return false;
+    }
+}
+
 static uint64_t sf32lb52_peripheral_read(void *opaque, hwaddr offset,
                                          unsigned int size)
 {
@@ -1658,6 +1820,9 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
         }
     }
     if (!strcmp(r->name, "sf32lb52.hpsys-peripherals")) {
+        if (sf32lb52_rcc_write(s, offset, value)) {
+            return;
+        }
         if (sf32lb52_gpio_write(s, offset, value)) {
             return;
         }
@@ -1779,7 +1944,8 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
             return;
         case LCDC_JDI_PAR_CTRL:
             if ((value & LCDC_JDI_PAR_CTRL_ENABLE) &&
-                !(r->regs[offset / 4] & LCDC_JDI_PAR_CTRL_ENABLE)) {
+                !(r->regs[offset / 4] & LCDC_JDI_PAR_CTRL_ENABLE) &&
+                sf32lb52_hpsys_clock_enabled(s, 1, HPSYS_RCC_LCDC1)) {
                 sf32lb52_lcdc_copy_framebuffer(s);
                 s->lcdc_phase = 1;
                 timer_mod(s->lcdc_timer,
@@ -1939,6 +2105,8 @@ static void sf32lb52_reset(void *opaque)
     s->hci_ready = false;
     memset(s->hpsys_periph.regs, 0, SF32LB52_PERIPH_SIZE);
     memset(s->lpsys_periph.regs, 0, SF32LB52_PERIPH_SIZE);
+    s->hpsys_periph.regs[HPSYS_RCC_ENR1 / 4] = UINT32_MAX;
+    s->hpsys_periph.regs[HPSYS_RCC_ENR2 / 4] = UINT32_MAX;
     if (s->rtc_initialized) {
         memcpy(&s->hpsys_periph.regs[RTC_BKP0R / 4], rtc_backup,
                sizeof(rtc_backup));

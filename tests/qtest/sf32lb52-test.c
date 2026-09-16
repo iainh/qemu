@@ -13,6 +13,14 @@
 #define LPSYS_RAM_BASE     0x20400000
 #define HPSYS_RCC_DLL1CR   0x5000002c
 #define HPSYS_RCC_HRCCAL1  0x50000034
+#define HPSYS_RCC_RSTR1    0x50000000
+#define HPSYS_RCC_RSTR2    0x50000004
+#define HPSYS_RCC_ENR1     0x50000008
+#define HPSYS_RCC_ENR2     0x5000000c
+#define HPSYS_RCC_ESR1     0x50000010
+#define HPSYS_RCC_ESR2     0x50000014
+#define HPSYS_RCC_ECR1     0x50000018
+#define HPSYS_RCC_ECR2     0x5000001c
 #define EFUSEC_CR          0x5000c000
 #define EFUSEC_SR          0x5000c008
 #define EFUSEC_BANK0_DATA0 0x5000c030
@@ -123,6 +131,8 @@
 
 #define HRCCAL1_CAL_EN     (1U << 30)
 #define HRCCAL1_CAL_DONE   (1U << 31)
+#define RCC_GPTIM2         (1U << 16)
+#define RCC_MPI2           (1U << 2)
 #define DLLCR_EN           (1U << 0)
 #define DLLCR_READY        (1U << 31)
 #define EFUSEC_CR_EN       (1U << 0)
@@ -399,6 +409,42 @@ static void test_gptim2(void)
     qtest_writel(qts, GPTIM2_SR, ~GPTIM_SR_UIF);
     qtest_clock_step(qts, 2 * G_TIME_SPAN_MILLISECOND * 1000);
     g_assert_cmphex(qtest_readl(qts, GPTIM2_SR) & GPTIM_SR_UIF, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_rcc_clock_and_reset(void)
+{
+    QTestState *qts = sf32lb52_start();
+
+    qtest_writel(qts, HPSYS_RCC_ECR1, RCC_GPTIM2);
+    g_assert_cmphex(qtest_readl(qts, HPSYS_RCC_ENR1) & RCC_GPTIM2, ==, 0);
+    qtest_writel(qts, GPTIM2_PSC, 2399);
+    qtest_writel(qts, GPTIM2_ARR, 19);
+    qtest_writel(qts, GPTIM2_DIER, GPTIM_DIER_UIE);
+    qtest_writel(qts, GPTIM2_CR1, GPTIM_CR1_CEN);
+    qtest_clock_step(qts, 2 * G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, GPTIM2_SR) & GPTIM_SR_UIF, ==, 0);
+
+    qtest_writel(qts, HPSYS_RCC_ESR1, RCC_GPTIM2);
+    g_assert_cmphex(qtest_readl(qts, HPSYS_RCC_ENR1) & RCC_GPTIM2, ==,
+                    RCC_GPTIM2);
+    qtest_clock_step(qts, 2 * G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, GPTIM2_SR) & GPTIM_SR_UIF, ==,
+                    GPTIM_SR_UIF);
+    qtest_writel(qts, HPSYS_RCC_RSTR1, RCC_GPTIM2);
+    g_assert_cmphex(qtest_readl(qts, GPTIM2_CR1), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, GPTIM2_SR), ==, 0);
+
+    qtest_writel(qts, HPSYS_RCC_ECR2, RCC_MPI2);
+    qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_RDID);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, 0);
+    qtest_writel(qts, HPSYS_RCC_ESR2, RCC_MPI2);
+    qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_RDID);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, MPI_SR_BUSY);
+    qtest_writel(qts, HPSYS_RCC_RSTR2, RCC_MPI2);
+    qtest_clock_step(qts, 1000);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, 0);
 
     qtest_quit(qts);
 }
@@ -890,6 +936,7 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/rtc-low-power-timer",
                    test_rtc_and_low_power_timer);
     qtest_add_func("sf32lb52/gptim2", test_gptim2);
+    qtest_add_func("sf32lb52/rcc-clock-reset", test_rcc_clock_and_reset);
     qtest_add_func("sf32lb52/pmu-reboot", test_pmu_reboot);
     qtest_add_func("sf32lb52/dmac1-channel2", test_dmac1_channel2);
     qtest_add_func("sf32lb52/audio-dma", test_audio_dma);
