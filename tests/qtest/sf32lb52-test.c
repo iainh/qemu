@@ -15,6 +15,8 @@
 #define HPSYS_RCC_HRCCAL1  0x50000034
 #define EFUSEC_CR          0x5000c000
 #define EFUSEC_SR          0x5000c008
+#define EFUSEC_BANK0_DATA0 0x5000c030
+#define EFUSEC_BANK0_DATA1 0x5000c034
 #define MPI2_CR            0x50042000
 #define MPI2_DR            0x50042004
 #define MPI2_SR            0x50042010
@@ -83,10 +85,29 @@
 #define LPTIM1_CR          0x500c1010
 #define LPTIM1_ARR         0x500c1018
 #define LPTIM1_CNT         0x500c101c
+#define GPTIM2_CR1         0x500b0000
+#define GPTIM2_DIER        0x500b000c
+#define GPTIM2_SR          0x500b0010
+#define GPTIM2_PSC         0x500b0028
+#define GPTIM2_ARR         0x500b002c
 #define MAILBOX1_C1IER     0x50082000
 #define MAILBOX1_C1ITR     0x50082004
 #define MAILBOX2_C1ICR     0x40002008
 #define MAILBOX2_C1MISR    0x40002010
+#define BT_RFC_VCO_REG1    0x40082800
+#define BT_RFC_VCO_REG3    0x40082808
+#define BT_RFC_FBDV_REG1   0x40082814
+#define BT_RFC_FBDV_REG2   0x40082818
+#define BT_RFC_EDR_CAL_REG1 0x40082824
+#define BT_RFC_ROSCAL_REG2 0x40082880
+#define BT_RFC_RCROSCAL_REG 0x40082884
+#define BT_RFC_PACAL_REG   0x40082888
+#define BT_PHY_TX_HFP_CFG  0x40084118
+#define GPADC_IRQ           0x50087044
+#define DMAC2_ISR           0x40001000
+#define LPSYS_AON_ACR       0x40040010
+#define BT_MAC_RCCAL_CTRL   0x40090114
+#define BT_MAC_RCCAL_RESULT 0x40090118
 #define HCPU2LCPU_RING     0x2007fe00
 #define LCPU2HCPU_RING     0x20405c00
 #define IPC_RING_HEADER    20
@@ -152,6 +173,9 @@
 #define LPTIM_IER_OFIE     (1U << 1)
 #define LPTIM_CR_ENABLE    (1U << 0)
 #define LPTIM_CR_SNGSTRT   (1U << 1)
+#define GPTIM_CR1_CEN      (1U << 0)
+#define GPTIM_DIER_UIE     (1U << 0)
+#define GPTIM_SR_UIF       (1U << 0)
 #define ACR_HXT48_REQ      (1U << 1)
 #define ACR_HXT48_RDY      (1U << 31)
 #define LRC32_EN           (1U << 0)
@@ -196,6 +220,10 @@ static void test_startup_handshakes(void)
 {
     QTestState *qts = sf32lb52_start();
 
+    qtest_writel(qts, LPSYS_AON_ACR, ACR_HXT48_REQ);
+    g_assert_cmphex(qtest_readl(qts, LPSYS_AON_ACR) & ACR_HXT48_RDY, ==,
+                    ACR_HXT48_RDY);
+
     qtest_writel(qts, HPSYS_AON_ACR, ACR_HXT48_REQ);
     g_assert_cmphex(qtest_readl(qts, HPSYS_AON_ACR) & ACR_HXT48_RDY, ==,
                     ACR_HXT48_RDY);
@@ -215,6 +243,8 @@ static void test_startup_handshakes(void)
     qtest_writel(qts, EFUSEC_CR, EFUSEC_CR_EN);
     g_assert_cmphex(qtest_readl(qts, EFUSEC_SR) & EFUSEC_SR_DONE, ==,
                     EFUSEC_SR_DONE);
+    g_assert_cmphex(qtest_readl(qts, EFUSEC_BANK0_DATA0), ==, 0x42455000);
+    g_assert_cmphex(qtest_readl(qts, EFUSEC_BANK0_DATA1), ==, 0xa575524c);
 
     qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_RDID);
     g_assert_cmphex(qtest_readl(qts, MPI2_SR) & MPI_SR_TCF, ==, MPI_SR_TCF);
@@ -334,6 +364,34 @@ static void test_rtc_and_low_power_timer(void)
     gtimer = qtest_readl(qts, HPSYS_AON_GTIMR);
     qtest_clock_step(qts, G_TIME_SPAN_MILLISECOND * 1000);
     g_assert_cmpuint(qtest_readl(qts, HPSYS_AON_GTIMR) - gtimer, >=, 32);
+
+    qtest_quit(qts);
+}
+
+static void test_gptim2(void)
+{
+    QTestState *qts = sf32lb52_start();
+
+    qtest_writel(qts, GPTIM2_PSC, 2399);
+    qtest_writel(qts, GPTIM2_ARR, 19);
+    qtest_writel(qts, GPTIM2_DIER, GPTIM_DIER_UIE);
+    qtest_writel(qts, GPTIM2_CR1, GPTIM_CR1_CEN);
+    qtest_clock_step(qts, G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, GPTIM2_SR) & GPTIM_SR_UIF, ==, 0);
+    qtest_clock_step(qts, G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, GPTIM2_SR) & GPTIM_SR_UIF, ==,
+                    GPTIM_SR_UIF);
+
+    qtest_writel(qts, GPTIM2_SR, ~GPTIM_SR_UIF);
+    g_assert_cmphex(qtest_readl(qts, GPTIM2_SR) & GPTIM_SR_UIF, ==, 0);
+    qtest_clock_step(qts, 2 * G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, GPTIM2_SR) & GPTIM_SR_UIF, ==,
+                    GPTIM_SR_UIF);
+
+    qtest_writel(qts, GPTIM2_CR1, 0);
+    qtest_writel(qts, GPTIM2_SR, ~GPTIM_SR_UIF);
+    qtest_clock_step(qts, 2 * G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, GPTIM2_SR) & GPTIM_SR_UIF, ==, 0);
 
     qtest_quit(qts);
 }
@@ -532,6 +590,26 @@ static uint8_t i2c_read_register(QTestState *qts, uint32_t base,
     return qtest_readl(qts, base + I2C_DBR);
 }
 
+static uint8_t i2c_read_register16(QTestState *qts, uint32_t base,
+                                   uint8_t address, uint16_t reg)
+{
+    qtest_writel(qts, base + I2C_DBR, address << 1);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_START | I2C_TCR_TB);
+    qtest_writel(qts, base + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, base + I2C_DBR, reg >> 8);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_TB);
+    qtest_writel(qts, base + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, base + I2C_DBR, reg);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_TB | I2C_TCR_STOP);
+    qtest_writel(qts, base + I2C_SR, I2C_SR_TE | I2C_SR_MSD);
+    qtest_writel(qts, base + I2C_DBR, (address << 1) | 1);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_START | I2C_TCR_TB);
+    qtest_writel(qts, base + I2C_SR, I2C_SR_TE);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_TB | I2C_TCR_STOP);
+
+    return qtest_readl(qts, base + I2C_DBR);
+}
+
 static void i2c_write_register(QTestState *qts, uint32_t base,
                                uint8_t address, uint8_t reg, uint8_t data)
 {
@@ -597,6 +675,7 @@ static void test_lcpu_hci(void)
     uint8_t event[7];
 
     qtest_writel(qts, MAILBOX1_C1IER, 1);
+    qtest_clock_step(qts, G_TIME_SPAN_MILLISECOND * 1000);
     g_assert_cmphex(qtest_readl(qts, MAILBOX2_C1MISR), ==, 1);
     g_assert_cmphex(qtest_readl(qts, LCPU2HCPU_RING + 12), ==, 7U << 16);
     qtest_memread(qts, LCPU2HCPU_RING + IPC_RING_HEADER, event,
@@ -620,6 +699,34 @@ static void test_lcpu_hci(void)
     qtest_quit(qts);
 }
 
+static void test_bt_rf_calibration(void)
+{
+    QTestState *qts = sf32lb52_start();
+
+    qtest_writel(qts, BT_RFC_VCO_REG3, 128);
+    qtest_writel(qts, BT_RFC_FBDV_REG1, 1U << 2);
+    g_assert_cmphex(qtest_readl(qts, BT_RFC_FBDV_REG1) & 1, ==, 1);
+    g_assert_cmpuint(qtest_readl(qts, BT_RFC_FBDV_REG2) >> 16, ==, 33880);
+
+    qtest_writel(qts, BT_PHY_TX_HFP_CFG, 63U << 22);
+    g_assert_cmpuint(qtest_readl(qts, BT_RFC_FBDV_REG2) >> 16, ==, 35140);
+    qtest_writel(qts, BT_RFC_VCO_REG1, 1U << 13);
+    qtest_writel(qts, BT_RFC_EDR_CAL_REG1, 128);
+    g_assert_cmpuint(qtest_readl(qts, BT_RFC_FBDV_REG2) >> 16, ==, 34940);
+
+    g_assert_cmphex(qtest_readl(qts, BT_RFC_PACAL_REG) & (1U << 1), !=, 0);
+    g_assert_cmphex(qtest_readl(qts, BT_RFC_ROSCAL_REG2) & 1, !=, 0);
+    g_assert_cmphex(qtest_readl(qts, BT_RFC_RCROSCAL_REG) & (1U << 20),
+                    !=, 0);
+    g_assert_cmphex(qtest_readl(qts, GPADC_IRQ) & (1U << 2), !=, 0);
+    g_assert_cmphex(qtest_readl(qts, DMAC2_ISR) & (1U << 29), !=, 0);
+    qtest_writel(qts, BT_MAC_RCCAL_CTRL, 20);
+    g_assert_cmphex(qtest_readl(qts, BT_MAC_RCCAL_RESULT), ==,
+                    (1U << 31) | 96000);
+
+    qtest_quit(qts);
+}
+
 static void test_obelix_i2c_devices(void)
 {
     QTestState *qts = sf32lb52_start();
@@ -634,6 +741,16 @@ static void test_obelix_i2c_devices(void)
                     0x10);
     g_assert_cmphex(i2c_read_register(qts, I2C3_BASE, 0x15, 0xa9), ==,
                     0x07);
+    g_assert_cmphex(i2c_read_register16(qts, I2C1_BASE, 0x6b, 0x0003), ==,
+                    0x43);
+    g_assert_cmphex(i2c_read_register16(qts, I2C1_BASE, 0x6b, 0x0510), ==,
+                    0x04);
+    g_assert_cmphex(i2c_read_register16(qts, I2C1_BASE, 0x6b, 0x0511), ==,
+                    0xc7);
+    g_assert_cmphex(i2c_read_register16(qts, I2C1_BASE, 0x6b, 0x0512), ==,
+                    0x80);
+    g_assert_cmphex(i2c_read_register16(qts, I2C1_BASE, 0x6b, 0x0515), ==,
+                    0x02);
 
     i2c_write_register(qts, I2C2_BASE, 0x6a, 0x12, 0x01);
     g_assert_cmphex(i2c_read_register(qts, I2C2_BASE, 0x6a, 0x12), ==, 0);
@@ -731,6 +848,7 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/dwt-cycle-counter", test_dwt_cycle_counter);
     qtest_add_func("sf32lb52/rtc-low-power-timer",
                    test_rtc_and_low_power_timer);
+    qtest_add_func("sf32lb52/gptim2", test_gptim2);
     qtest_add_func("sf32lb52/dmac1-channel2", test_dmac1_channel2);
     qtest_add_func("sf32lb52/audio-dma", test_audio_dma);
     qtest_add_func("sf32lb52/flash-program-erase",
@@ -742,6 +860,7 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/obelix-motion-samples",
                    test_obelix_motion_samples);
     qtest_add_func("sf32lb52/lcpu-hci", test_lcpu_hci);
+    qtest_add_func("sf32lb52/bt-rf-calibration", test_bt_rf_calibration);
     qtest_add_func("sf32lb52/obelix-buttons", test_obelix_buttons);
     qtest_add_func("sf32lb52/obelix-touch", test_obelix_touch);
     qtest_add_func("sf32lb52/usart1", test_usart1);

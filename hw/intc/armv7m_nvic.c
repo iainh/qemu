@@ -2584,6 +2584,8 @@ static const Property props_nvic[] = {
      * to use a reasonable default.
      */
     DEFINE_PROP_UINT8("num-prio-bits", NVICState, num_prio_bits, 0),
+    DEFINE_PROP_BOOL("systick-wakes-deep-sleep", NVICState,
+                     systick_wakes_deep_sleep, false),
 };
 
 static void armv7m_nvic_reset(DeviceState *dev)
@@ -2672,16 +2674,12 @@ static void nvic_systick_trigger(void *opaque, int n, int level)
          * n == 0 : NonSecure systick
          * n == 1 : Secure systick
          *
-         * While the core is in deep sleep (SCR.SLEEPDEEP set, used by the
-         * STM32 STOP low-power mode) the SysTick's clock is stopped, so it
-         * must not pend its exception -- doing so would spuriously wake the
-         * core. Firmware accounts for time elapsed across STOP using the RTC
-         * wakeup timer instead. Without this, the still-running SysTick wakes
-         * the CPU every tick and its exception double-counts against the
-         * firmware's own elapsed-time accounting, making the OS clock (and
-         * hence the seconds/minutes tick services) run roughly twice as fast.
+         * Some SoCs stop the SysTick clock in deep sleep, while others use
+         * SysTick to wake from a deep WFI. Suppress the exception only when
+         * the machine requests the former behaviour.
          */
-        if (s->cpu->env.v7m.scr[n] & R_V7M_SCR_SLEEPDEEP_MASK) {
+        if (!s->systick_wakes_deep_sleep &&
+            (s->cpu->env.v7m.scr[n] & R_V7M_SCR_SLEEPDEEP_MASK)) {
             return;
         }
         armv7m_nvic_set_pending(s, ARMV7M_EXCP_SYSTICK, n);

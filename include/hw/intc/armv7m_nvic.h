@@ -79,6 +79,7 @@ struct NVICState {
     MemoryRegion sysregmem;
 
     uint32_t num_irq;
+    bool systick_wakes_deep_sleep;
     qemu_irq excpout;
     qemu_irq sysresetreq;
 };

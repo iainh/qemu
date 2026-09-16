@@ -53,6 +53,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(ARMv7MState, ARMV7M)
  * + Property "vfp": enable VFP (forwarded to CPU object)
  * + Property "dsp": enable DSP (forwarded to CPU object)
  * + Property "enable-bitband": expose bitbanded IO
+ * + Property "systick-wakes-deep-sleep": allow SysTick to wake the CPU when
+ *   SCR.SLEEPDEEP is set
  * + Property "mpu-ns-regions": number of Non-Secure MPU regions (forwarded
  *   to CPU object pmsav7-dregion property; default is whatever the default
  *   for the CPU is)

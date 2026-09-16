@@ -260,6 +260,9 @@ static void armv7m_instance_init(Object *obj)
                               OBJECT(&s->nvic), "num-irq");
     object_property_add_alias(obj, "num-prio-bits",
                               OBJECT(&s->nvic), "num-prio-bits");
+    object_property_add_alias(obj, "systick-wakes-deep-sleep",
+                              OBJECT(&s->nvic),
+                              "systick-wakes-deep-sleep");
 
     object_initialize_child(obj, "systick-reg-ns", &s->systick[M_REG_NS],
                             TYPE_SYSTICK);

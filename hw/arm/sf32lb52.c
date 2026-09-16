@@ -54,6 +54,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define SF32LB52_HPSYS_PERIPH_BASE    0x50000000
 #define SF32LB52_USART1_BASE          0x50084000
 #define SF32LB52_USART1_IRQ           59
+#define SF32LB52_GPTIM2_IRQ           71
 #define SF32LB52_LPTIM1_IRQ           46
 #define SF32LB52_RTC_IRQ              49
 #define SF32LB52_LCDC1_IRQ            63
@@ -70,6 +71,36 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define SF32LB52_SYSCLK_HZ            240000000
 #define SF32LB52_REFCLK_HZ            1000000
 
+#define BT_RFC_BASE                   0x082800
+#define BT_RFC_VCO_REG1               (BT_RFC_BASE + 0x00)
+#define BT_RFC_VCO_REG3               (BT_RFC_BASE + 0x08)
+#define BT_RFC_FBDV_REG1              (BT_RFC_BASE + 0x14)
+#define BT_RFC_FBDV_REG2              (BT_RFC_BASE + 0x18)
+#define BT_RFC_EDR_CAL_REG1           (BT_RFC_BASE + 0x24)
+#define BT_RFC_ROSCAL_REG2            (BT_RFC_BASE + 0x80)
+#define BT_RFC_RCROSCAL_REG           (BT_RFC_BASE + 0x84)
+#define BT_RFC_PACAL_REG              (BT_RFC_BASE + 0x88)
+#define BT_PHY_TX_HFP_CFG             0x084118
+#define BT_RFC_FKCAL_READY            (1U << 0)
+#define BT_RFC_FKCAL_ENABLE           (1U << 2)
+#define BT_RFC_VCO3G_ENABLE           (1U << 13)
+#define BT_RFC_ROSCAL_DONE            (1U << 0)
+#define BT_RFC_RCCAL_DONE             (1U << 20)
+#define BT_RFC_RCCAL_CAPCODE          (16U << 26)
+#define BT_RFC_PACAL_DONE             (1U << 1)
+#define BT_PHY_HFP_FCW_SHIFT          22
+#define BT_PHY_HFP_FCW_MASK           0x3f
+#define GPADC_IRQ                     0x087044
+#define GPADC_IRQ_READY               (1U << 2)
+#define DMAC2_ISR                     0x001000
+#define DMAC2_ISR_TCIF8               (1U << 29)
+#define LPSYS_AON_ACR                 0x040010
+#define LPSYS_AON_ACR_HXT48_REQ       (1U << 1)
+#define LPSYS_AON_ACR_HXT48_RDY       (1U << 31)
+#define BT_MAC_RCCAL_CTRL             0x090114
+#define BT_MAC_RCCAL_RESULT           0x090118
+#define BT_MAC_RCCAL_DONE             (1U << 31)
+
 #define HPSYS_RCC_HRCCAL1             0x000034
 #define HPSYS_RCC_HRCCAL2             0x000038
 #define HPSYS_RCC_HRCCAL1_CAL_EN      (1U << 30)
@@ -80,6 +111,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define HPSYS_RCC_DLLCR_READY         (1U << 31)
 #define EFUSEC_CR                     0x00c000
 #define EFUSEC_SR                     0x00c008
+#define EFUSEC_BANK0_DATA0            0x00c030
+#define EFUSEC_BANK0_DATA1            0x00c034
 #define EFUSEC_CR_EN                  (1U << 0)
 #define EFUSEC_SR_DONE                (1U << 0)
 #define MPI2_CR                       0x042000
@@ -244,6 +277,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define LPTIM_CR_CNTSTRT              (1U << 2)
 #define LPTIM_CR_COUNTRST             (1U << 3)
 #define LPTIM_FREQUENCY_HZ            10000
+#define GPTIM2_BASE                   0x0b0000
+#define GPTIM_CR1                     (GPTIM2_BASE + 0x00)
+#define GPTIM_DIER                    (GPTIM2_BASE + 0x0c)
+#define GPTIM_SR                      (GPTIM2_BASE + 0x10)
+#define GPTIM_EGR                     (GPTIM2_BASE + 0x14)
+#define GPTIM_PSC                     (GPTIM2_BASE + 0x28)
+#define GPTIM_ARR                     (GPTIM2_BASE + 0x2c)
+#define GPTIM_CR1_CEN                 (1U << 0)
+#define GPTIM_DIER_UIE                (1U << 0)
+#define GPTIM_SR_UIF                  (1U << 0)
+#define GPTIM_EGR_UG                  (1U << 0)
+#define GPTIM_CLOCK_HZ                24000000
 #define LCDC1_BASE                    0x008000
 #define LCDC_IRQ                      (LCDC1_BASE + 0x008)
 #define LCDC_SETTING                  (LCDC1_BASE + 0x00c)
@@ -280,6 +325,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define IPC_RING_HEADER_SIZE          20
 #define HCI_COMMAND_PACKET            0x01
 #define HCI_EVENT_PACKET              0x04
+#define NPM1300_ADDRESS               0x6b
+#define NPM1300_EVENTS_ADC            0x0003
+#define NPM1300_VBUS_STATUS           0x0207
+#define NPM1300_CHARGE_STATUS         0x0334
+#define NPM1300_IBAT_STATUS           0x0510
+#define NPM1300_VBAT_MSB              0x0511
+#define NPM1300_NTC_MSB               0x0512
+#define NPM1300_GP0_LSBS              0x0515
+#define NPM1300_VBAT2_MSB             0x0518
+#define NPM1300_GP1_LSBS              0x051a
 
 #define DWT_CTRL                      0x000
 #define DWT_CYCCNT                    0x004
@@ -295,7 +350,8 @@ typedef struct SF32LB52PeripheralRegion {
 typedef struct SF32LB52I2CState {
     qemu_irq irq;
     uint8_t address;
-    uint8_t reg;
+    uint16_t reg;
+    uint8_t reg_bytes;
     bool addressed;
     bool read;
     bool have_reg;
@@ -330,14 +386,17 @@ struct SF32LB52MachineState {
     DeviceState *touch;
     qemu_irq gpio1_irq;
     qemu_irq lcdc_irq;
+    qemu_irq gptim2_irq;
     qemu_irq lptim1_irq;
     qemu_irq rtc_irq;
     qemu_irq lcpu2hcpu_irq;
     qemu_irq dmac1_irq[DMAC_CHANNEL_COUNT];
     QEMUTimer *lcdc_timer;
+    QEMUTimer *gptim2_timer;
     QEMUTimer *lptim1_timer;
     QEMUTimer *rtc_alarm_timer;
     QEMUTimer *lsm6dso_timer;
+    QEMUTimer *hci_ready_timer;
     QEMUTimer *dmac_timer[DMAC_CHANNEL_COUNT];
     SF32LB52DMATimer dmac_timer_context[DMAC_CHANNEL_COUNT];
     BlockBackend *flash_blk;
@@ -354,6 +413,7 @@ struct SF32LB52MachineState {
     uint16_t lsm6dso_fifo_byte;
     bool lsm6dso_fifo_reading;
     uint8_t hci_command[260];
+    uint8_t npm1300[0x1000];
     uint16_t hci_command_len;
     bool hci_ready;
     int64_t dwt_cyccnt_base_ns;
@@ -606,8 +666,10 @@ static void sf32lb52_i2c_transfer(SF32LB52MachineState *s, int index,
         bool read = address_byte & 1;
         uint8_t address = address_byte >> 1;
 
-        if (!read || !i2c->addressed || i2c->address != address) {
+        if (!read || i2c->address != address) {
             i2c->have_reg = false;
+            i2c->reg = 0;
+            i2c->reg_bytes = 0;
         }
         i2c->address = address;
         i2c->addressed = true;
@@ -621,13 +683,26 @@ static void sf32lb52_i2c_transfer(SF32LB52MachineState *s, int index,
         } else if (index == 1 && i2c->address == LSM6DSO_ADDRESS) {
             regs[(base + I2C_DBR) / 4] =
                 sf32lb52_lsm6dso_read(s, i2c->reg++);
+        } else if (index == 0 && i2c->address == NPM1300_ADDRESS) {
+            regs[(base + I2C_DBR) / 4] = s->npm1300[i2c->reg++];
         } else {
             regs[(base + I2C_DBR) / 4] =
-                i2c->data[i2c->address][i2c->reg++];
+                i2c->data[i2c->address][(uint8_t)i2c->reg++];
         }
         status = I2C_SR_RF;
     } else if (i2c->addressed && !i2c->have_reg) {
-        i2c->reg = regs[(base + I2C_DBR) / 4];
+        uint8_t byte = regs[(base + I2C_DBR) / 4];
+
+        if (index == 0 && i2c->address == NPM1300_ADDRESS &&
+            i2c->reg_bytes++ == 0) {
+            i2c->reg = (uint16_t)byte << 8;
+            goto complete;
+        }
+        if (index == 0 && i2c->address == NPM1300_ADDRESS) {
+            i2c->reg |= byte;
+        } else {
+            i2c->reg = byte;
+        }
         if (index == 1 && i2c->address == LSM6DSO_ADDRESS &&
             i2c->reg == LSM6DSO_FIFO_DATA_REG) {
             s->lsm6dso_fifo_byte = 0;
@@ -640,7 +715,9 @@ static void sf32lb52_i2c_transfer(SF32LB52MachineState *s, int index,
         uint8_t reg = i2c->reg++;
         uint8_t data = regs[(base + I2C_DBR) / 4];
 
-        if (index == 0 && i2c->address == AW2016_ADDRESS &&
+        if (index == 0 && i2c->address == NPM1300_ADDRESS) {
+            s->npm1300[i2c->reg - 1] = data;
+        } else if (index == 0 && i2c->address == AW2016_ADDRESS &&
             reg == AW2016_CHIP_ID_REG) {
             data = AW2016_CHIP_ID;
         } else if (index == 1 && i2c->address == LSM6DSO_ADDRESS &&
@@ -673,6 +750,7 @@ static void sf32lb52_i2c_transfer(SF32LB52MachineState *s, int index,
             }
         }
     }
+complete:
     if (value & I2C_TCR_STOP) {
         status |= I2C_SR_MSD;
         if (index == 1 && i2c->address == LSM6DSO_ADDRESS) {
@@ -1115,6 +1193,47 @@ static void sf32lb52_lptim1_expire(void *opaque)
     sf32lb52_lptim1_update_irq(s);
 }
 
+static void sf32lb52_gptim2_update_irq(SF32LB52MachineState *s)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+
+    qemu_set_irq(s->gptim2_irq,
+                 regs[GPTIM_SR / 4] & regs[GPTIM_DIER / 4] & GPTIM_SR_UIF);
+}
+
+static uint64_t sf32lb52_gptim2_period_ns(SF32LB52MachineState *s)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+    uint64_t ticks = (regs[GPTIM_PSC / 4] + 1ULL) *
+                     (regs[GPTIM_ARR / 4] + 1ULL);
+
+    return MAX(ticks * NANOSECONDS_PER_SECOND / GPTIM_CLOCK_HZ, 1ULL);
+}
+
+static void sf32lb52_gptim2_schedule(SF32LB52MachineState *s)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+
+    if ((regs[GPTIM_CR1 / 4] & GPTIM_CR1_CEN) &&
+        (regs[GPTIM_DIER / 4] & GPTIM_DIER_UIE)) {
+        timer_mod(s->gptim2_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  sf32lb52_gptim2_period_ns(s));
+    } else {
+        timer_del(s->gptim2_timer);
+    }
+    sf32lb52_gptim2_update_irq(s);
+}
+
+static void sf32lb52_gptim2_expire(void *opaque)
+{
+    SF32LB52MachineState *s = opaque;
+
+    s->hpsys_periph.regs[GPTIM_SR / 4] |= GPTIM_SR_UIF;
+    sf32lb52_gptim2_update_irq(s);
+    sf32lb52_gptim2_schedule(s);
+}
+
 static void sf32lb52_lptim1_start(SF32LB52MachineState *s)
 {
     uint32_t period = s->hpsys_periph.regs[LPTIM_ARR / 4];
@@ -1192,6 +1311,16 @@ static void sf32lb52_hci_interrupt(SF32LB52MachineState *s)
     qemu_irq_raise(s->lcpu2hcpu_irq);
 }
 
+static void sf32lb52_hci_event(SF32LB52MachineState *s, uint16_t opcode);
+
+static void sf32lb52_hci_ready(void *opaque)
+{
+    SF32LB52MachineState *s = opaque;
+
+    sf32lb52_hci_ring_init();
+    sf32lb52_hci_event(s, 0xfc11);
+}
+
 static void sf32lb52_hci_event(SF32LB52MachineState *s, uint16_t opcode)
 {
     uint8_t event[80] = {
@@ -1240,6 +1369,12 @@ static void sf32lb52_hci_event(SF32LB52MachineState *s, uint16_t opcode)
     case 0x200f:
         return_length = 2;
         event[7] = 8;
+        break;
+    case 0x2018:
+        return_length = 9;
+        memcpy(event + 7, (uint8_t[]) {
+            0x21, 0x43, 0x65, 0x87, 0xa9, 0xcb, 0xed, 0x0f,
+        }, 8);
         break;
     default:
         break;
@@ -1347,6 +1482,18 @@ static const MemoryRegionOps sf32lb52_dwt_ops = {
     .valid.max_access_size = 4,
 };
 
+static uint32_t sf32lb52_bt_rfc_count(SF32LB52MachineState *s)
+{
+    uint32_t *regs = s->lpsys_periph.regs;
+    bool edr = regs[BT_RFC_VCO_REG1 / 4] & BT_RFC_VCO3G_ENABLE;
+    uint32_t pdx = regs[(edr ? BT_RFC_EDR_CAL_REG1 : BT_RFC_VCO_REG3) / 4] &
+                   0xff;
+    uint32_t fcw = regs[BT_PHY_TX_HFP_CFG / 4] >> BT_PHY_HFP_FCW_SHIFT &
+                   BT_PHY_HFP_FCW_MASK;
+
+    return (edr ? 38800 : 39000) - 40 * pdx + 20 * fcw;
+}
+
 static uint64_t sf32lb52_peripheral_read(void *opaque, hwaddr offset,
                                          unsigned int size)
 {
@@ -1356,6 +1503,31 @@ static uint64_t sf32lb52_peripheral_read(void *opaque, hwaddr offset,
 
     qemu_log_mask(LOG_UNIMP, "%s: register read at 0x%06" HWADDR_PRIx "\n",
                   r->name, offset);
+    if (!strcmp(r->name, "sf32lb52.lpsys-peripherals")) {
+        switch (offset) {
+        case DMAC2_ISR:
+            return r->regs[offset / 4] | DMAC2_ISR_TCIF8;
+        case BT_RFC_FBDV_REG1:
+            return r->regs[offset / 4] |
+                   ((r->regs[offset / 4] & BT_RFC_FKCAL_ENABLE) ?
+                    BT_RFC_FKCAL_READY : 0);
+        case BT_RFC_FBDV_REG2:
+            return (r->regs[offset / 4] & 0xffff) |
+                   sf32lb52_bt_rfc_count(s) << 16;
+        case BT_RFC_PACAL_REG:
+            return r->regs[offset / 4] | BT_RFC_PACAL_DONE;
+        case BT_RFC_ROSCAL_REG2:
+            return r->regs[offset / 4] | BT_RFC_ROSCAL_DONE;
+        case BT_RFC_RCROSCAL_REG:
+            return r->regs[offset / 4] | BT_RFC_RCCAL_DONE |
+                   BT_RFC_RCCAL_CAPCODE;
+        case BT_MAC_RCCAL_RESULT:
+            return BT_MAC_RCCAL_DONE |
+                   (r->regs[BT_MAC_RCCAL_CTRL / 4] & 0xffff) * 4800;
+        default:
+            break;
+        }
+    }
     if (!strcmp(r->name, "sf32lb52.hpsys-peripherals")) {
         switch (offset) {
         case RTC_TR:
@@ -1371,6 +1543,8 @@ static uint64_t sf32lb52_peripheral_read(void *opaque, hwaddr offset,
         case HPSYS_AON_GTIMR:
             return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * 32768 /
                    NANOSECONDS_PER_SECOND;
+        case GPADC_IRQ:
+            return r->regs[offset / 4] | GPADC_IRQ_READY;
         default:
             break;
         }
@@ -1398,6 +1572,11 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
 
     if (!strcmp(r->name, "sf32lb52.lpsys-peripherals")) {
         switch (offset) {
+        case LPSYS_AON_ACR:
+            if (value & LPSYS_AON_ACR_HXT48_REQ) {
+                result |= LPSYS_AON_ACR_HXT48_RDY;
+            }
+            break;
         case MAILBOX2_BASE + MAILBOX_C1IER:
             r->regs[offset / 4] = value;
             return;
@@ -1441,12 +1620,30 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
             }
         }
         switch (offset) {
+        case GPTIM_CR1:
+        case GPTIM_DIER:
+        case GPTIM_PSC:
+        case GPTIM_ARR:
+            r->regs[offset / 4] = value;
+            sf32lb52_gptim2_schedule(s);
+            return;
+        case GPTIM_SR:
+            r->regs[offset / 4] &= value;
+            sf32lb52_gptim2_update_irq(s);
+            return;
+        case GPTIM_EGR:
+            if (value & GPTIM_EGR_UG) {
+                r->regs[GPTIM_SR / 4] |= GPTIM_SR_UIF;
+                sf32lb52_gptim2_update_irq(s);
+            }
+            return;
         case MAILBOX1_BASE + MAILBOX_C1IER:
             r->regs[offset / 4] = value;
             if ((value & 1) && !s->hci_ready) {
                 s->hci_ready = true;
-                sf32lb52_hci_ring_init();
-                sf32lb52_hci_event(s, 0xfc11);
+                timer_mod(s->hci_ready_timer,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                          NANOSECONDS_PER_SECOND / 1000);
             }
             return;
         case MAILBOX1_BASE + MAILBOX_C1ITR:
@@ -1642,14 +1839,17 @@ static void sf32lb52_reset(void *opaque)
     s->rng_state = 0x6d2b79f5;
     s->lcdc_phase = 0;
     timer_del(s->lcdc_timer);
+    timer_del(s->gptim2_timer);
     timer_del(s->lptim1_timer);
     timer_del(s->rtc_alarm_timer);
     timer_del(s->lsm6dso_timer);
+    timer_del(s->hci_ready_timer);
     for (int channel = 0; channel < DMAC_CHANNEL_COUNT; channel++) {
         timer_del(s->dmac_timer[channel]);
         qemu_irq_lower(s->dmac1_irq[channel]);
     }
     qemu_irq_lower(s->lcdc_irq);
+    qemu_irq_lower(s->gptim2_irq);
     qemu_irq_lower(s->lptim1_irq);
     qemu_irq_lower(s->rtc_irq);
     qemu_irq_lower(s->lcpu2hcpu_irq);
@@ -1672,12 +1872,23 @@ static void sf32lb52_reset(void *opaque)
     for (int i = 0; i < ARRAY_SIZE(s->i2c); i++) {
         s->i2c[i].address = 0;
         s->i2c[i].reg = 0;
+        s->i2c[i].reg_bytes = 0;
         s->i2c[i].addressed = false;
         s->i2c[i].read = false;
         s->i2c[i].have_reg = false;
         memset(s->i2c[i].data, 0, sizeof(s->i2c[i].data));
         qemu_irq_lower(s->i2c[i].irq);
     }
+    memset(s->npm1300, 0, sizeof(s->npm1300));
+    s->npm1300[NPM1300_EVENTS_ADC] = 0x43;
+    s->npm1300[NPM1300_VBUS_STATUS] = 0;
+    s->npm1300[NPM1300_CHARGE_STATUS] = 0;
+    s->npm1300[NPM1300_IBAT_STATUS] = 0x04;
+    s->npm1300[NPM1300_VBAT_MSB] = 0xc7;
+    s->npm1300[NPM1300_NTC_MSB] = 0x80;
+    s->npm1300[NPM1300_GP0_LSBS] = 0x02;
+    s->npm1300[NPM1300_VBAT2_MSB] = 0;
+    s->npm1300[NPM1300_GP1_LSBS] = 0x10;
     s->i2c[0].data[AW2016_ADDRESS][AW2016_CHIP_ID_REG] = AW2016_CHIP_ID;
     s->i2c[0].data[W1160_ADDRESS][W1160_CHIP_ID_REG] = W1160_CHIP_ID;
     s->i2c[0].data[W1160_ADDRESS][W1160_FLAG1_REG] = W1160_FLAG_ALS_READY;
@@ -1698,6 +1909,8 @@ static void sf32lb52_reset(void *opaque)
     s->hpsys_periph.regs[HPSYS_AON_ACR / 4] =
         HPSYS_AON_ACR_HRC48_REQ | HPSYS_AON_ACR_HRC48_RDY;
     s->hpsys_periph.regs[HPSYS_AON_ISSR / 4] = HPSYS_AON_ISSR_LP_ACTIVE;
+    s->hpsys_periph.regs[EFUSEC_BANK0_DATA0 / 4] = 0x42455000;
+    s->hpsys_periph.regs[EFUSEC_BANK0_DATA1 / 4] = 0xa575524c;
     s->hpsys_periph.regs[RTC_ISR / 4] =
         RTC_ISR_ALRMWF | RTC_ISR_WUTWF | RTC_ISR_RSF;
     qemu_get_timedate(&tm, 0);
@@ -1802,6 +2015,7 @@ static void sf32lb52_machine_init(MachineState *machine)
     qdev_connect_clock_in(armv7m, "cpuclk", s->sysclk);
     qdev_connect_clock_in(armv7m, "refclk", s->refclk);
     qdev_prop_set_bit(armv7m, "enable-bitband", false);
+    qdev_prop_set_bit(armv7m, "systick-wakes-deep-sleep", true);
     object_property_set_link(OBJECT(&s->armv7m), "memory",
                              OBJECT(system_memory), &error_abort);
     sysbus_realize(SYS_BUS_DEVICE(&s->armv7m), &error_fatal);
@@ -1828,18 +2042,23 @@ static void sf32lb52_machine_init(MachineState *machine)
     }
     s->gpio1_irq = qdev_get_gpio_in(armv7m, SF32LB52_GPIO1_IRQ);
     s->lcdc_irq = qdev_get_gpio_in(armv7m, SF32LB52_LCDC1_IRQ);
+    s->gptim2_irq = qdev_get_gpio_in(armv7m, SF32LB52_GPTIM2_IRQ);
     s->lptim1_irq = qdev_get_gpio_in(armv7m, SF32LB52_LPTIM1_IRQ);
     s->rtc_irq = qdev_get_gpio_in(armv7m, SF32LB52_RTC_IRQ);
     s->lcpu2hcpu_irq = qdev_get_gpio_in(armv7m,
                                         SF32LB52_LCPU2HCPU_IRQ);
     s->lcdc_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                  sf32lb52_lcdc_timer, s);
+    s->gptim2_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                   sf32lb52_gptim2_expire, s);
     s->lptim1_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    sf32lb52_lptim1_expire, s);
     s->rtc_alarm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                       sf32lb52_rtc_alarm, s);
     s->lsm6dso_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                     sf32lb52_lsm6dso_sample, s);
+    s->hci_ready_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                      sf32lb52_hci_ready, s);
     for (int channel = 0; channel < DMAC_CHANNEL_COUNT; channel++) {
         s->dmac1_irq[channel] = qdev_get_gpio_in(
             armv7m, SF32LB52_DMAC1_CH1_IRQ + channel);
