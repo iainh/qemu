@@ -303,7 +303,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define LPTIM_CR_COUNTRST             (1U << 3)
 #define LPTIM_FREQUENCY_HZ            10000
 #define PMUC_CR                       0x0ca000
+#define PMUC_WER                      0x0ca004
+#define PMUC_WSR                      0x0ca008
+#define PMUC_WCR                      0x0ca00c
+#define PMUC_HPSYS_LDO                0x0ca04c
+#define PMUC_LPSYS_LDO                0x0ca050
+#define PMUC_HPSYS_SWR                0x0ca054
+#define PMUC_LPSYS_SWR                0x0ca058
+#define PMUC_PERI_LDO                 0x0ca05c
 #define PMUC_CR_REBOOT                (1U << 2)
+#define PMUC_WER_RTC                  (1U << 0)
+#define PMUC_LDO_EN                   (1U << 0)
+#define PMUC_LDO_RDY                  (1U << 16)
+#define PMUC_SWR_PSW                  (3U << 0)
+#define PMUC_SWR_RDY                  (1U << 31)
+#define PMUC_PERI_LDO2_EN             (1U << 8)
+#define PMUC_PERI_LDO2_PD             (1U << 13)
 #define GPTIM2_BASE                   0x0b0000
 #define GPTIM_CR1                     (GPTIM2_BASE + 0x00)
 #define GPTIM_DIER                    (GPTIM2_BASE + 0x0c)
@@ -1132,7 +1147,9 @@ static void sf32lb52_mpi2_start(SF32LB52MachineState *s, uint32_t command)
 {
     uint32_t *regs = s->hpsys_periph.regs;
 
-    if (!sf32lb52_hpsys_clock_enabled(s, 2, HPSYS_RCC_MPI2)) {
+    if (!sf32lb52_hpsys_clock_enabled(s, 2, HPSYS_RCC_MPI2) ||
+        !(regs[PMUC_PERI_LDO / 4] & PMUC_PERI_LDO2_EN) ||
+        (regs[PMUC_PERI_LDO / 4] & PMUC_PERI_LDO2_PD)) {
         return;
     }
     if (regs[MPI2_SR / 4] & MPI_SR_BUSY) {
@@ -1252,6 +1269,9 @@ static void sf32lb52_rtc_alarm(void *opaque)
     }
     if (sf32lb52_rtc_alarm_matches(s)) {
         regs[RTC_ISR / 4] |= RTC_ISR_ALRMF;
+        if (regs[PMUC_WER / 4] & PMUC_WER_RTC) {
+            regs[PMUC_WSR / 4] |= PMUC_WER_RTC;
+        }
         qemu_set_irq(s->rtc_irq, regs[RTC_CR / 4] & RTC_CR_ALRMIE);
     }
     timer_mod(s->rtc_alarm_timer,
@@ -1857,6 +1877,31 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
                 qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
             }
             return;
+        case PMUC_WCR:
+            r->regs[PMUC_WSR / 4] &= ~value;
+            return;
+        case PMUC_HPSYS_LDO:
+        case PMUC_LPSYS_LDO:
+            r->regs[offset / 4] = value |
+                ((value & PMUC_LDO_EN) ? PMUC_LDO_RDY : 0);
+            return;
+        case PMUC_HPSYS_SWR:
+        case PMUC_LPSYS_SWR:
+            r->regs[offset / 4] = value |
+                ((value & PMUC_SWR_PSW) ? PMUC_SWR_RDY : 0);
+            return;
+        case PMUC_PERI_LDO:
+            r->regs[offset / 4] = value;
+            if (!(value & PMUC_PERI_LDO2_EN) ||
+                (value & PMUC_PERI_LDO2_PD)) {
+                timer_del(s->mpi2_timer);
+            } else if ((r->regs[MPI2_SR / 4] & MPI_SR_BUSY) &&
+                       !timer_pending(s->mpi2_timer)) {
+                timer_mod(s->mpi2_timer,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                          sf32lb52_flash_command_time(s->mpi2_command));
+            }
+            return;
         case GPTIM_CR1:
         case GPTIM_DIER:
         case GPTIM_PSC:
@@ -2107,6 +2152,15 @@ static void sf32lb52_reset(void *opaque)
     memset(s->lpsys_periph.regs, 0, SF32LB52_PERIPH_SIZE);
     s->hpsys_periph.regs[HPSYS_RCC_ENR1 / 4] = UINT32_MAX;
     s->hpsys_periph.regs[HPSYS_RCC_ENR2 / 4] = UINT32_MAX;
+    s->hpsys_periph.regs[PMUC_HPSYS_LDO / 4] =
+        PMUC_LDO_EN | PMUC_LDO_RDY;
+    s->hpsys_periph.regs[PMUC_LPSYS_LDO / 4] =
+        PMUC_LDO_EN | PMUC_LDO_RDY;
+    s->hpsys_periph.regs[PMUC_HPSYS_SWR / 4] =
+        PMUC_SWR_PSW | PMUC_SWR_RDY;
+    s->hpsys_periph.regs[PMUC_LPSYS_SWR / 4] =
+        PMUC_SWR_PSW | PMUC_SWR_RDY;
+    s->hpsys_periph.regs[PMUC_PERI_LDO / 4] = PMUC_PERI_LDO2_EN;
     if (s->rtc_initialized) {
         memcpy(&s->hpsys_periph.regs[RTC_BKP0R / 4], rtc_backup,
                sizeof(rtc_backup));

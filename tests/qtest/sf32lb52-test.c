@@ -89,6 +89,12 @@
 #define RTC_ALRMDR         0x500cb01c
 #define RTC_BKP2R          0x500cb038
 #define PMUC_CR            0x500ca000
+#define PMUC_WER           0x500ca004
+#define PMUC_WSR           0x500ca008
+#define PMUC_WCR           0x500ca00c
+#define PMUC_HPSYS_LDO     0x500ca04c
+#define PMUC_LPSYS_SWR     0x500ca058
+#define PMUC_PERI_LDO      0x500ca05c
 #define LPTIM1_ISR         0x500c1000
 #define LPTIM1_ICR         0x500c1004
 #define LPTIM1_IER         0x500c1008
@@ -179,6 +185,13 @@
 #define RTC_CR_ALRMIE      (1U << 11)
 #define RTC_ISR_ALRMF      (1U << 1)
 #define PMUC_CR_REBOOT     (1U << 2)
+#define PMUC_WER_RTC       (1U << 0)
+#define PMUC_LDO_EN        (1U << 0)
+#define PMUC_LDO_RDY       (1U << 16)
+#define PMUC_SWR_PSW       (3U << 0)
+#define PMUC_SWR_RDY       (1U << 31)
+#define PMUC_LDO2_EN       (1U << 8)
+#define PMUC_LDO2_PD       (1U << 13)
 #define RTC_ALRMMASK_DATE  (1U << 27)
 #define RTC_ALRMMASK_MONTH (1U << 28)
 #define RTC_ALRMMASK_WDAY  (1U << 29)
@@ -359,10 +372,14 @@ static void test_rtc_and_low_power_timer(void)
     qtest_writel(qts, RTC_ALRMDR,
                  RTC_ALRMMASK_DATE | RTC_ALRMMASK_MONTH |
                  RTC_ALRMMASK_WDAY);
+    qtest_writel(qts, PMUC_WER, PMUC_WER_RTC);
     qtest_writel(qts, RTC_CR, RTC_CR_ALRME | RTC_CR_ALRMIE);
     qtest_clock_step(qts, G_TIME_SPAN_SECOND * 1000);
     g_assert_cmphex(qtest_readl(qts, RTC_ISR) & RTC_ISR_ALRMF, ==,
                     RTC_ISR_ALRMF);
+    g_assert_cmphex(qtest_readl(qts, PMUC_WSR), ==, PMUC_WER_RTC);
+    qtest_writel(qts, PMUC_WCR, PMUC_WER_RTC);
+    g_assert_cmphex(qtest_readl(qts, PMUC_WSR), ==, 0);
     qtest_writel(qts, RTC_ISR, 0);
     g_assert_cmphex(qtest_readl(qts, RTC_ISR) & RTC_ISR_ALRMF, ==, 0);
 
@@ -468,6 +485,38 @@ static void test_pmu_reboot(void)
     g_assert_cmphex(qtest_readl(qts, RTC_DR) & 0x01ff1f3f, ==,
                     rtc_date(26, 9, 16));
     g_assert_cmphex(qtest_readl(qts, GPTIM2_PSC), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_pmu_power_domains(void)
+{
+    QTestState *qts = sf32lb52_start();
+
+    qtest_writel(qts, PMUC_HPSYS_LDO, PMUC_LDO_EN);
+    g_assert_cmphex(qtest_readl(qts, PMUC_HPSYS_LDO), ==,
+                    PMUC_LDO_EN | PMUC_LDO_RDY);
+    qtest_writel(qts, PMUC_HPSYS_LDO, 0);
+    g_assert_cmphex(qtest_readl(qts, PMUC_HPSYS_LDO), ==, 0);
+    qtest_writel(qts, PMUC_LPSYS_SWR, PMUC_SWR_PSW);
+    g_assert_cmphex(qtest_readl(qts, PMUC_LPSYS_SWR), ==,
+                    PMUC_SWR_PSW | PMUC_SWR_RDY);
+    qtest_writel(qts, PMUC_LPSYS_SWR, 0);
+    g_assert_cmphex(qtest_readl(qts, PMUC_LPSYS_SWR), ==, 0);
+
+    qtest_writel(qts, PMUC_PERI_LDO, PMUC_LDO2_PD);
+    qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_RDID);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, 0);
+
+    qtest_writel(qts, PMUC_PERI_LDO, PMUC_LDO2_EN);
+    qtest_writel(qts, MPI2_CMDR1, SPI_FLASH_RDID);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, MPI_SR_BUSY);
+    qtest_writel(qts, PMUC_PERI_LDO, PMUC_LDO2_PD);
+    qtest_clock_step(qts, 1000);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, MPI_SR_BUSY);
+    qtest_writel(qts, PMUC_PERI_LDO, PMUC_LDO2_EN);
+    qtest_clock_step(qts, 1000);
+    g_assert_cmphex(qtest_readl(qts, MPI2_SR), ==, MPI_SR_TCF);
 
     qtest_quit(qts);
 }
@@ -938,6 +987,7 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/gptim2", test_gptim2);
     qtest_add_func("sf32lb52/rcc-clock-reset", test_rcc_clock_and_reset);
     qtest_add_func("sf32lb52/pmu-reboot", test_pmu_reboot);
+    qtest_add_func("sf32lb52/pmu-power-domains", test_pmu_power_domains);
     qtest_add_func("sf32lb52/dmac1-channel2", test_dmac1_channel2);
     qtest_add_func("sf32lb52/audio-dma", test_audio_dma);
     qtest_add_func("sf32lb52/flash-program-erase",
