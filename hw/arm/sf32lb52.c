@@ -62,6 +62,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define SF32LB52_I2C2_IRQ             76
 #define SF32LB52_I2C4_IRQ             78
 #define SF32LB52_I2C3_IRQ             93
+#define SF32LB52_LCPU2HCPU_IRQ        58
+#define SF32LB52_DMAC1_CH1_IRQ        50
 #define SF32LB52_DWT_BASE             0xe0001000
 #define SF32LB52_DWT_SIZE             0x1000
 #define SF32LB52_NUM_IRQS             96
@@ -116,6 +118,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define DMAC_CHANNEL_STRIDE           0x14
 #define DMAC_CHANNEL_COUNT            8
 #define DMAC_CCR_EN                   (1U << 0)
+#define DMAC_CCR_TCIE                 (1U << 1)
+#define DMAC_CCR_HTIE                 (1U << 2)
+#define DMAC_CCR_DIR                  (1U << 4)
+#define DMAC_CCR_CIRC                 (1U << 5)
+#define DMAC_CCR_MINC                 (1U << 7)
 #define I2C1_CR                       0x09c000
 #define I2C2_CR                       0x09d000
 #define I2C3_CR                       0x09e000
@@ -166,6 +173,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define LSM6DSO_WHO_AM_I              0x6c
 #define LSM6DSO_CTRL3_C_REG           0x12
 #define LSM6DSO_SW_RESET              (1U << 0)
+#define LSM6DSO_CTRL1_XL_REG          0x10
+#define LSM6DSO_STATUS_REG            0x1e
+#define LSM6DSO_OUTX_L_A_REG          0x28
+#define LSM6DSO_FIFO_CTRL1_REG        0x07
+#define LSM6DSO_FIFO_CTRL2_REG        0x08
+#define LSM6DSO_FIFO_CTRL3_REG        0x09
+#define LSM6DSO_FIFO_CTRL4_REG        0x0a
+#define LSM6DSO_FIFO_STATUS1_REG      0x3a
+#define LSM6DSO_FIFO_STATUS2_REG      0x3b
+#define LSM6DSO_FIFO_DATA_REG         0x78
+#define LSM6DSO_FIFO_MODE_STREAM      0x06
+#define LSM6DSO_FIFO_WTM              (1U << 7)
+#define LSM6DSO_INT1_PIN              38
 #define MMC5603_ADDRESS               0x30
 #define MMC5603_STATUS1_REG           0x18
 #define MMC5603_MEAS_READY            (1U << 6)
@@ -185,6 +205,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define AUDCODEC_PLL_CAL_CFG_EN       (1U << 0)
 #define AUDCODEC_PLL_CAL_CFG_DONE     (1U << 1)
 #define AUDCODEC_PLL_CAL_CFG_LEN_SHIFT 16
+#define AUDCODEC_DAC_CH0_ENTRY        0x088050
+#define PDM1_DATA_L                   0x09a040
 #define HPSYS_CFG_RTC_TR              0x00b014
 #define HPSYS_CFG_RTC_DR              0x00b018
 #define RTC_TR                        0x0cb000
@@ -245,6 +267,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(SF32LB52FlashState, SF32LB52_FLASH)
 #define PMUC_LRC32_CR                  0x0ca01c
 #define PMUC_LRC32_CR_EN              (1U << 0)
 #define PMUC_LRC32_CR_RDY             (1U << 31)
+#define MAILBOX1_BASE                 0x082000
+#define MAILBOX2_BASE                 0x002000
+#define MAILBOX_C1IER                 0x00
+#define MAILBOX_C1ITR                 0x04
+#define MAILBOX_C1ICR                 0x08
+#define MAILBOX_C1ISR                 0x0c
+#define MAILBOX_C1MISR                0x10
+#define HCPU2LCPU_RING                0x2007fe00
+#define LCPU2HCPU_RING                0x20405c00
+#define IPC_RING_SIZE                 512
+#define IPC_RING_HEADER_SIZE          20
+#define HCI_COMMAND_PACKET            0x01
+#define HCI_EVENT_PACKET              0x04
 
 #define DWT_CTRL                      0x000
 #define DWT_CYCCNT                    0x004
@@ -266,6 +301,11 @@ typedef struct SF32LB52I2CState {
     bool have_reg;
     uint8_t data[128][256];
 } SF32LB52I2CState;
+
+typedef struct SF32LB52DMATimer {
+    SF32LB52MachineState *machine;
+    unsigned int channel;
+} SF32LB52DMATimer;
 
 struct SF32LB52FlashState {
     DeviceState parent_obj;
@@ -292,9 +332,14 @@ struct SF32LB52MachineState {
     qemu_irq lcdc_irq;
     qemu_irq lptim1_irq;
     qemu_irq rtc_irq;
+    qemu_irq lcpu2hcpu_irq;
+    qemu_irq dmac1_irq[DMAC_CHANNEL_COUNT];
     QEMUTimer *lcdc_timer;
     QEMUTimer *lptim1_timer;
     QEMUTimer *rtc_alarm_timer;
+    QEMUTimer *lsm6dso_timer;
+    QEMUTimer *dmac_timer[DMAC_CHANNEL_COUNT];
+    SF32LB52DMATimer dmac_timer_context[DMAC_CHANNEL_COUNT];
     BlockBackend *flash_blk;
     uint32_t flash_backed_size;
     uint8_t lcdc_phase;
@@ -304,6 +349,13 @@ struct SF32LB52MachineState {
     uint32_t dmac_count[DMAC_CHANNEL_COUNT];
     uint32_t dmac_periph[DMAC_CHANNEL_COUNT];
     uint32_t dmac_memory[DMAC_CHANNEL_COUNT];
+    bool dmac_second_half[DMAC_CHANNEL_COUNT];
+    uint16_t lsm6dso_fifo_samples;
+    uint16_t lsm6dso_fifo_byte;
+    bool lsm6dso_fifo_reading;
+    uint8_t hci_command[260];
+    uint16_t hci_command_len;
+    bool hci_ready;
     int64_t dwt_cyccnt_base_ns;
     int64_t rtc_base_ns;
     int64_t rtc_base_seconds;
@@ -439,6 +491,80 @@ static void sf32lb52_touch_state(void *opaque, bool down,
     sf32lb52_gpio_input(s, OBELIX_TOUCH_INT_PIN, true);
 }
 
+static uint16_t sf32lb52_lsm6dso_watermark(SF32LB52MachineState *s)
+{
+    uint8_t *data = s->i2c[1].data[LSM6DSO_ADDRESS];
+
+    return data[LSM6DSO_FIFO_CTRL1_REG] |
+           (data[LSM6DSO_FIFO_CTRL2_REG] & 1) << 8;
+}
+
+static void sf32lb52_lsm6dso_update_irq(SF32LB52MachineState *s)
+{
+    uint16_t watermark = sf32lb52_lsm6dso_watermark(s);
+
+    sf32lb52_gpio_input(s, LSM6DSO_INT1_PIN,
+                        watermark && s->lsm6dso_fifo_samples >= watermark);
+}
+
+static uint64_t sf32lb52_lsm6dso_sample_period(SF32LB52MachineState *s)
+{
+    uint8_t *data = s->i2c[1].data[LSM6DSO_ADDRESS];
+    static const uint64_t sample_period_ns[] = {
+        0, 80000000, 38461538, 19230769, 9615384, 4807692,
+        2403846, 1200480, 600240, 300030, 150015,
+    };
+    unsigned int odr = data[LSM6DSO_CTRL1_XL_REG] >> 4;
+
+    return odr < ARRAY_SIZE(sample_period_ns) ? sample_period_ns[odr] : 0;
+}
+
+static void sf32lb52_lsm6dso_sample(void *opaque)
+{
+    SF32LB52MachineState *s = opaque;
+    uint8_t *data = s->i2c[1].data[LSM6DSO_ADDRESS];
+    uint64_t period = sf32lb52_lsm6dso_sample_period(s);
+
+    if ((data[LSM6DSO_FIFO_CTRL4_REG] & 7) != LSM6DSO_FIFO_MODE_STREAM ||
+        !period) {
+        return;
+    }
+    s->lsm6dso_fifo_samples = MIN(s->lsm6dso_fifo_samples + 1, 511);
+    sf32lb52_lsm6dso_update_irq(s);
+    timer_mod(s->lsm6dso_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + period);
+}
+
+static uint8_t sf32lb52_lsm6dso_read(SF32LB52MachineState *s, uint8_t reg)
+{
+    uint8_t *data = s->i2c[1].data[LSM6DSO_ADDRESS];
+    static const uint8_t stationary_sample[7] = {
+        0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40,
+    };
+
+    switch (reg) {
+    case LSM6DSO_STATUS_REG:
+        return 1;
+    case LSM6DSO_FIFO_STATUS1_REG:
+        return s->lsm6dso_fifo_samples;
+    case LSM6DSO_FIFO_STATUS2_REG:
+        return (s->lsm6dso_fifo_samples >> 8) |
+               (s->lsm6dso_fifo_samples >=
+                sf32lb52_lsm6dso_watermark(s) ? LSM6DSO_FIFO_WTM : 0);
+    default:
+        if (reg >= LSM6DSO_FIFO_DATA_REG) {
+            uint8_t value = stationary_sample[s->lsm6dso_fifo_byte++ % 7];
+
+            if (!(s->lsm6dso_fifo_byte % 7) && s->lsm6dso_fifo_samples) {
+                s->lsm6dso_fifo_samples--;
+                sf32lb52_lsm6dso_update_irq(s);
+            }
+            return value;
+        }
+        return data[reg];
+    }
+}
+
 static int sf32lb52_i2c_index(hwaddr offset)
 {
     static const hwaddr i2c_base[] = {
@@ -487,11 +613,28 @@ static void sf32lb52_i2c_transfer(SF32LB52MachineState *s, int index,
         i2c->addressed = true;
         i2c->read = read;
     } else if (i2c->addressed && i2c->read) {
-        regs[(base + I2C_DBR) / 4] =
-            i2c->data[i2c->address][i2c->reg++];
+        if (index == 1 && i2c->address == LSM6DSO_ADDRESS &&
+            s->lsm6dso_fifo_reading) {
+            regs[(base + I2C_DBR) / 4] =
+                sf32lb52_lsm6dso_read(s, LSM6DSO_FIFO_DATA_REG);
+            i2c->reg++;
+        } else if (index == 1 && i2c->address == LSM6DSO_ADDRESS) {
+            regs[(base + I2C_DBR) / 4] =
+                sf32lb52_lsm6dso_read(s, i2c->reg++);
+        } else {
+            regs[(base + I2C_DBR) / 4] =
+                i2c->data[i2c->address][i2c->reg++];
+        }
         status = I2C_SR_RF;
     } else if (i2c->addressed && !i2c->have_reg) {
         i2c->reg = regs[(base + I2C_DBR) / 4];
+        if (index == 1 && i2c->address == LSM6DSO_ADDRESS &&
+            i2c->reg == LSM6DSO_FIFO_DATA_REG) {
+            s->lsm6dso_fifo_byte = 0;
+            s->lsm6dso_fifo_reading = true;
+        } else if (index == 1 && i2c->address == LSM6DSO_ADDRESS) {
+            s->lsm6dso_fifo_reading = false;
+        }
         i2c->have_reg = true;
     } else if (i2c->addressed) {
         uint8_t reg = i2c->reg++;
@@ -506,9 +649,35 @@ static void sf32lb52_i2c_transfer(SF32LB52MachineState *s, int index,
             data &= ~LSM6DSO_SW_RESET;
         }
         i2c->data[i2c->address][reg] = data;
+        if (index == 1 && i2c->address == LSM6DSO_ADDRESS) {
+            if (reg == LSM6DSO_FIFO_DATA_REG) {
+                s->lsm6dso_fifo_byte = 0;
+            }
+            if (reg == LSM6DSO_FIFO_CTRL4_REG) {
+                s->lsm6dso_fifo_samples = 0;
+                sf32lb52_lsm6dso_update_irq(s);
+            }
+            if (reg == LSM6DSO_FIFO_CTRL4_REG ||
+                reg == LSM6DSO_CTRL1_XL_REG) {
+                uint64_t period = sf32lb52_lsm6dso_sample_period(s);
+
+                if ((i2c->data[LSM6DSO_ADDRESS]
+                              [LSM6DSO_FIFO_CTRL4_REG] & 7) ==
+                        LSM6DSO_FIFO_MODE_STREAM && period) {
+                    timer_mod(s->lsm6dso_timer,
+                              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                              period);
+                } else {
+                    timer_del(s->lsm6dso_timer);
+                }
+            }
+        }
     }
     if (value & I2C_TCR_STOP) {
         status |= I2C_SR_MSD;
+        if (index == 1 && i2c->address == LSM6DSO_ADDRESS) {
+            s->lsm6dso_fifo_reading = false;
+        }
         i2c->addressed = false;
     }
     regs[(base + I2C_SR) / 4] |= status;
@@ -535,19 +704,89 @@ static void sf32lb52_dmac_clear_flags(uint32_t *regs, uint32_t value)
     regs[DMAC1_ISR / 4] = status;
 }
 
+static void sf32lb52_dmac_update_irq(SF32LB52MachineState *s)
+{
+    uint32_t *regs = s->hpsys_periph.regs;
+
+    for (int channel = 0; channel < DMAC_CHANNEL_COUNT; channel++) {
+        uint32_t ccr = regs[(DMAC1_CCR1 +
+                             channel * DMAC_CHANNEL_STRIDE) / 4];
+        uint32_t status = regs[DMAC1_ISR / 4] >> (channel * 4);
+
+        qemu_set_irq(s->dmac1_irq[channel],
+                     ((ccr & DMAC_CCR_TCIE) && (status & 2)) ||
+                     ((ccr & DMAC_CCR_HTIE) && (status & 4)));
+    }
+}
+
+static void sf32lb52_dmac_stream(void *opaque)
+{
+    SF32LB52DMATimer *context = opaque;
+    SF32LB52MachineState *s = context->machine;
+    unsigned int channel = context->channel;
+    uint32_t *regs = s->hpsys_periph.regs;
+    hwaddr ccr_offset = DMAC1_CCR1 + channel * DMAC_CHANNEL_STRIDE;
+    uint32_t ccr = regs[ccr_offset / 4];
+    uint32_t count = s->dmac_count[channel];
+    uint32_t shift = channel * 4;
+    bool second_half = s->dmac_second_half[channel];
+
+    if (!(ccr & DMAC_CCR_EN) || !count) {
+        return;
+    }
+    if (s->dmac_periph[channel] ==
+        SF32LB52_HPSYS_PERIPH_BASE + PDM1_DATA_L) {
+        uint32_t length = count * sizeof(uint32_t) / 2;
+        hwaddr address = s->dmac_memory[channel] +
+                         (second_half ? length : 0);
+        g_autofree uint8_t *samples = g_malloc0(length);
+
+        for (uint32_t sample = 0; sample + 1 < length; sample += 2) {
+            stw_le_p(samples + sample,
+                     ((sample / 2 + (second_half ? length / 2 : 0)) % 64 -
+                      32) * 32);
+        }
+        address_space_write(&address_space_memory, address,
+                            MEMTXATTRS_UNSPECIFIED, samples, length);
+    }
+
+    if (second_half) {
+        regs[DMAC1_ISR / 4] |= 3U << shift;
+        regs[(DMAC1_CNDTR1 + channel * DMAC_CHANNEL_STRIDE) / 4] = count;
+    } else {
+        regs[DMAC1_ISR / 4] |= 5U << shift;
+        regs[(DMAC1_CNDTR1 + channel * DMAC_CHANNEL_STRIDE) / 4] = count / 2;
+    }
+    s->dmac_second_half[channel] = !second_half;
+    sf32lb52_dmac_update_irq(s);
+
+    if (ccr & DMAC_CCR_CIRC) {
+        timer_mod(s->dmac_timer[channel],
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  MAX(NANOSECONDS_PER_SECOND / 1000,
+                      (uint64_t)count * NANOSECONDS_PER_SECOND / 16000));
+    } else if (second_half) {
+        regs[ccr_offset / 4] &= ~DMAC_CCR_EN;
+    }
+}
+
 static bool sf32lb52_dmac_write(SF32LB52MachineState *s, uint32_t *regs,
                                 hwaddr offset, uint32_t value,
                                 uint32_t *result)
 {
     if (offset == DMAC1_IFCR) {
         sf32lb52_dmac_clear_flags(regs, value);
+        sf32lb52_dmac_update_irq(s);
         return true;
     }
 
     for (int channel = 0; channel < DMAC_CHANNEL_COUNT; channel++) {
         hwaddr ccr = DMAC1_CCR1 + channel * DMAC_CHANNEL_STRIDE;
 
-        if (offset == ccr && (value & DMAC_CCR_EN)) {
+        if (offset == ccr && !(value & DMAC_CCR_EN)) {
+            timer_del(s->dmac_timer[channel]);
+            qemu_irq_lower(s->dmac1_irq[channel]);
+        } else if (offset == ccr && (value & DMAC_CCR_EN)) {
             uint32_t shift = channel * 4;
 
             s->dmac_count[channel] =
@@ -556,9 +795,23 @@ static bool sf32lb52_dmac_write(SF32LB52MachineState *s, uint32_t *regs,
                 regs[(DMAC1_CPAR1 + channel * DMAC_CHANNEL_STRIDE) / 4];
             s->dmac_memory[channel] =
                 regs[(DMAC1_CM0AR1 + channel * DMAC_CHANNEL_STRIDE) / 4];
-            regs[DMAC1_ISR / 4] |= 3U << shift;
-            regs[(DMAC1_CNDTR1 + channel * DMAC_CHANNEL_STRIDE) / 4] = 0;
-            *result &= ~DMAC_CCR_EN;
+            if (s->dmac_periph[channel] ==
+                    SF32LB52_HPSYS_PERIPH_BASE + PDM1_DATA_L ||
+                s->dmac_periph[channel] ==
+                    SF32LB52_HPSYS_PERIPH_BASE + AUDCODEC_DAC_CH0_ENTRY) {
+                s->dmac_second_half[channel] = false;
+                timer_mod(s->dmac_timer[channel],
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                          MAX(NANOSECONDS_PER_SECOND / 1000,
+                              (uint64_t)s->dmac_count[channel] *
+                              NANOSECONDS_PER_SECOND / 16000));
+            } else {
+                regs[DMAC1_ISR / 4] |= 3U << shift;
+                regs[(DMAC1_CNDTR1 +
+                      channel * DMAC_CHANNEL_STRIDE) / 4] = 0;
+                *result &= ~DMAC_CCR_EN;
+            }
+            sf32lb52_dmac_update_irq(s);
             break;
         }
     }
@@ -872,6 +1125,185 @@ static void sf32lb52_lptim1_start(SF32LB52MachineState *s)
               LPTIM_FREQUENCY_HZ);
 }
 
+static uint32_t sf32lb52_load32(hwaddr address)
+{
+    uint32_t value = 0;
+
+    address_space_read(&address_space_memory, address, MEMTXATTRS_UNSPECIFIED,
+                       &value, sizeof(value));
+    return le32_to_cpu(value);
+}
+
+static void sf32lb52_store32(hwaddr address, uint32_t value)
+{
+    value = cpu_to_le32(value);
+    address_space_write(&address_space_memory, address, MEMTXATTRS_UNSPECIFIED,
+                        &value, sizeof(value));
+}
+
+static void sf32lb52_hci_ring_init(void)
+{
+    uint8_t header[IPC_RING_HEADER_SIZE] = { 0 };
+
+    stl_le_p(header, LCPU2HCPU_RING + IPC_RING_HEADER_SIZE);
+    stl_le_p(header + 4, LCPU2HCPU_RING + IPC_RING_HEADER_SIZE);
+    stw_le_p(header + 16, IPC_RING_SIZE - IPC_RING_HEADER_SIZE);
+    address_space_write(&address_space_memory, LCPU2HCPU_RING,
+                        MEMTXATTRS_UNSPECIFIED, header, sizeof(header));
+}
+
+static bool sf32lb52_hci_ring_put(const uint8_t *data, size_t length)
+{
+    uint32_t read = sf32lb52_load32(LCPU2HCPU_RING + 8);
+    uint32_t write = sf32lb52_load32(LCPU2HCPU_RING + 12);
+    uint16_t read_index = read >> 16;
+    uint16_t write_index = write >> 16;
+    uint16_t read_mirror = read;
+    uint16_t write_mirror = write;
+    const uint16_t size = IPC_RING_SIZE - IPC_RING_HEADER_SIZE;
+    size_t free = read_index == write_index ?
+                  (read_mirror == write_mirror ? size : 0) :
+                  (write_index < read_index ? read_index - write_index :
+                   size - write_index + read_index);
+
+    if (length > free) {
+        return false;
+    }
+    for (size_t i = 0; i < length; i++) {
+        address_space_write(&address_space_memory,
+                            LCPU2HCPU_RING + IPC_RING_HEADER_SIZE + write_index,
+                            MEMTXATTRS_UNSPECIFIED, data + i, 1);
+        if (++write_index == size) {
+            write_index = 0;
+            write_mirror ^= 1;
+        }
+    }
+    sf32lb52_store32(LCPU2HCPU_RING + 12,
+                     write_index << 16 | write_mirror);
+    return true;
+}
+
+static void sf32lb52_hci_interrupt(SF32LB52MachineState *s)
+{
+    uint32_t *regs = s->lpsys_periph.regs;
+
+    regs[(MAILBOX2_BASE + MAILBOX_C1ISR) / 4] |= 1;
+    regs[(MAILBOX2_BASE + MAILBOX_C1MISR) / 4] |= 1;
+    qemu_irq_raise(s->lcpu2hcpu_irq);
+}
+
+static void sf32lb52_hci_event(SF32LB52MachineState *s, uint16_t opcode)
+{
+    uint8_t event[80] = {
+        HCI_EVENT_PACKET, 0x0e, 0x04, 0x01, opcode, opcode >> 8, 0x00,
+    };
+    size_t return_length = 1;
+
+    switch (opcode) {
+    case 0x1001:
+        return_length = 9;
+        event[7] = 0x0b;
+        event[10] = 0x0b;
+        event[11] = 0x31;
+        event[12] = 0x01;
+        break;
+    case 0x1002:
+        return_length = 65;
+        break;
+    case 0x1003:
+    case 0x2003:
+    case 0x201c:
+        return_length = 9;
+        memset(event + 7, 0xff, 8);
+        break;
+    case 0x1005:
+        return_length = 8;
+        event[7] = 0xfb;
+        event[8] = 0x00;
+        event[10] = 8;
+        break;
+    case 0x1009:
+        return_length = 7;
+        event[7] = 0x52;
+        event[8] = 0x4c;
+        event[9] = 0x42;
+        event[10] = 0x45;
+        event[11] = 0x50;
+        event[12] = 0x00;
+        break;
+    case 0x2002:
+        return_length = 4;
+        event[7] = 0xfb;
+        event[8] = 0x00;
+        event[9] = 8;
+        break;
+    case 0x200f:
+        return_length = 2;
+        event[7] = 8;
+        break;
+    default:
+        break;
+    }
+    event[2] = 3 + return_length;
+    if (sf32lb52_hci_ring_put(event, 3 + event[2])) {
+        sf32lb52_hci_interrupt(s);
+    }
+}
+
+static void sf32lb52_hci_process(SF32LB52MachineState *s)
+{
+    while (s->hci_command_len) {
+        uint16_t packet_length;
+        uint16_t opcode;
+
+        if (s->hci_command[0] != HCI_COMMAND_PACKET) {
+            memmove(s->hci_command, s->hci_command + 1,
+                    --s->hci_command_len);
+            continue;
+        }
+        if (s->hci_command_len < 4) {
+            return;
+        }
+        packet_length = 4 + s->hci_command[3];
+        if (s->hci_command_len < packet_length) {
+            return;
+        }
+        opcode = lduw_le_p(s->hci_command + 1);
+        sf32lb52_hci_event(s, opcode);
+        s->hci_command_len -= packet_length;
+        memmove(s->hci_command, s->hci_command + packet_length,
+                s->hci_command_len);
+    }
+}
+
+static void sf32lb52_hci_tx(SF32LB52MachineState *s)
+{
+    uint32_t read = sf32lb52_load32(HCPU2LCPU_RING + 8);
+    uint32_t write = sf32lb52_load32(HCPU2LCPU_RING + 12);
+    uint16_t read_index = read >> 16;
+    uint16_t write_index = write >> 16;
+    uint16_t read_mirror = read;
+    uint16_t write_mirror = write;
+    const uint16_t size = IPC_RING_SIZE - IPC_RING_HEADER_SIZE;
+
+    while (read_index != write_index || read_mirror != write_mirror) {
+        uint8_t byte;
+
+        address_space_read(&address_space_memory,
+                           HCPU2LCPU_RING + IPC_RING_HEADER_SIZE + read_index,
+                           MEMTXATTRS_UNSPECIFIED, &byte, 1);
+        if (s->hci_command_len < sizeof(s->hci_command)) {
+            s->hci_command[s->hci_command_len++] = byte;
+        }
+        if (++read_index == size) {
+            read_index = 0;
+            read_mirror ^= 1;
+        }
+    }
+    sf32lb52_store32(HCPU2LCPU_RING + 8, read_index << 16 | read_mirror);
+    sf32lb52_hci_process(s);
+}
+
 static uint64_t sf32lb52_dwt_read(void *opaque, hwaddr offset,
                                   unsigned int size)
 {
@@ -964,6 +1396,22 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
                   " = 0x%08" PRIx64 "\n",
                   r->name, offset, value);
 
+    if (!strcmp(r->name, "sf32lb52.lpsys-peripherals")) {
+        switch (offset) {
+        case MAILBOX2_BASE + MAILBOX_C1IER:
+            r->regs[offset / 4] = value;
+            return;
+        case MAILBOX2_BASE + MAILBOX_C1ICR:
+            r->regs[(MAILBOX2_BASE + MAILBOX_C1ISR) / 4] &= ~value;
+            r->regs[(MAILBOX2_BASE + MAILBOX_C1MISR) / 4] &= ~value;
+            if (!r->regs[(MAILBOX2_BASE + MAILBOX_C1MISR) / 4]) {
+                qemu_irq_lower(s->lcpu2hcpu_irq);
+            }
+            return;
+        default:
+            break;
+        }
+    }
     if (!strcmp(r->name, "sf32lb52.hpsys-peripherals")) {
         if (sf32lb52_gpio_write(s, offset, value)) {
             return;
@@ -993,6 +1441,22 @@ static void sf32lb52_peripheral_write(void *opaque, hwaddr offset,
             }
         }
         switch (offset) {
+        case MAILBOX1_BASE + MAILBOX_C1IER:
+            r->regs[offset / 4] = value;
+            if ((value & 1) && !s->hci_ready) {
+                s->hci_ready = true;
+                sf32lb52_hci_ring_init();
+                sf32lb52_hci_event(s, 0xfc11);
+            }
+            return;
+        case MAILBOX1_BASE + MAILBOX_C1ITR:
+            sf32lb52_hci_tx(s);
+            r->regs[(MAILBOX1_BASE + MAILBOX_C1ITR) / 4] = 0;
+            r->regs[(MAILBOX1_BASE + MAILBOX_C1ISR) / 4] = 0;
+            return;
+        case MAILBOX1_BASE + MAILBOX_C1ICR:
+            r->regs[(MAILBOX1_BASE + MAILBOX_C1ISR) / 4] &= ~value;
+            return;
         case RTC_TR:
         case RTC_DR:
             sf32lb52_rtc_set_calendar(s, offset, value);
@@ -1180,12 +1644,24 @@ static void sf32lb52_reset(void *opaque)
     timer_del(s->lcdc_timer);
     timer_del(s->lptim1_timer);
     timer_del(s->rtc_alarm_timer);
+    timer_del(s->lsm6dso_timer);
+    for (int channel = 0; channel < DMAC_CHANNEL_COUNT; channel++) {
+        timer_del(s->dmac_timer[channel]);
+        qemu_irq_lower(s->dmac1_irq[channel]);
+    }
     qemu_irq_lower(s->lcdc_irq);
     qemu_irq_lower(s->lptim1_irq);
     qemu_irq_lower(s->rtc_irq);
+    qemu_irq_lower(s->lcpu2hcpu_irq);
     memset(s->dmac_count, 0, sizeof(s->dmac_count));
     memset(s->dmac_periph, 0, sizeof(s->dmac_periph));
     memset(s->dmac_memory, 0, sizeof(s->dmac_memory));
+    memset(s->dmac_second_half, 0, sizeof(s->dmac_second_half));
+    s->lsm6dso_fifo_samples = 0;
+    s->lsm6dso_fifo_byte = 0;
+    s->lsm6dso_fifo_reading = false;
+    s->hci_command_len = 0;
+    s->hci_ready = false;
     memset(s->hpsys_periph.regs, 0, SF32LB52_PERIPH_SIZE);
     memset(s->lpsys_periph.regs, 0, SF32LB52_PERIPH_SIZE);
     *sf32lb52_gpio_reg(s, OBELIX_TOUCH_INT_PIN, GPIO_DIR) |=
@@ -1209,6 +1685,8 @@ static void sf32lb52_reset(void *opaque)
     s->i2c[0].data[W1160_ADDRESS][W1160_DATA2_ALS_REG] = 0x00;
     s->i2c[1].data[LSM6DSO_ADDRESS][LSM6DSO_WHO_AM_I_REG] =
         LSM6DSO_WHO_AM_I;
+    s->i2c[1].data[LSM6DSO_ADDRESS][LSM6DSO_STATUS_REG] = 1;
+    s->i2c[1].data[LSM6DSO_ADDRESS][LSM6DSO_OUTX_L_A_REG + 5] = 0x40;
     s->i2c[1].data[MMC5603_ADDRESS][MMC5603_STATUS1_REG] =
         MMC5603_MEAS_READY | MMC5603_OTP_READY;
     s->i2c[1].data[MMC5603_ADDRESS][MMC5603_WHO_AM_I_REG] =
@@ -1352,12 +1830,25 @@ static void sf32lb52_machine_init(MachineState *machine)
     s->lcdc_irq = qdev_get_gpio_in(armv7m, SF32LB52_LCDC1_IRQ);
     s->lptim1_irq = qdev_get_gpio_in(armv7m, SF32LB52_LPTIM1_IRQ);
     s->rtc_irq = qdev_get_gpio_in(armv7m, SF32LB52_RTC_IRQ);
+    s->lcpu2hcpu_irq = qdev_get_gpio_in(armv7m,
+                                        SF32LB52_LCPU2HCPU_IRQ);
     s->lcdc_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                  sf32lb52_lcdc_timer, s);
     s->lptim1_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    sf32lb52_lptim1_expire, s);
     s->rtc_alarm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                       sf32lb52_rtc_alarm, s);
+    s->lsm6dso_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    sf32lb52_lsm6dso_sample, s);
+    for (int channel = 0; channel < DMAC_CHANNEL_COUNT; channel++) {
+        s->dmac1_irq[channel] = qdev_get_gpio_in(
+            armv7m, SF32LB52_DMAC1_CH1_IRQ + channel);
+        s->dmac_timer_context[channel].machine = s;
+        s->dmac_timer_context[channel].channel = channel;
+        s->dmac_timer[channel] = timer_new_ns(
+            QEMU_CLOCK_VIRTUAL, sf32lb52_dmac_stream,
+            &s->dmac_timer_context[channel]);
+    }
 
     s->display = qdev_new(TYPE_PEBBLE_DISPLAY);
     qdev_prop_set_uint32(s->display, "width", 200);

@@ -38,6 +38,11 @@
 #define DMAC1_CNDTR2       0x50081020
 #define DMAC1_CPAR2        0x50081024
 #define DMAC1_CM0AR2       0x50081028
+#define DMAC1_CCR5         0x50081058
+#define DMAC1_CNDTR5       0x5008105c
+#define DMAC1_CPAR5        0x50081060
+#define DMAC1_CM0AR5       0x50081064
+#define PDM1_DATA_L        0x5009a040
 #define I2C2_CR            0x5009d000
 #define I2C1_BASE          0x5009c000
 #define I2C2_BASE          0x5009d000
@@ -78,6 +83,13 @@
 #define LPTIM1_CR          0x500c1010
 #define LPTIM1_ARR         0x500c1018
 #define LPTIM1_CNT         0x500c101c
+#define MAILBOX1_C1IER     0x50082000
+#define MAILBOX1_C1ITR     0x50082004
+#define MAILBOX2_C1ICR     0x40002008
+#define MAILBOX2_C1MISR    0x40002010
+#define HCPU2LCPU_RING     0x2007fe00
+#define LCPU2HCPU_RING     0x20405c00
+#define IPC_RING_HEADER    20
 #define USART1_BASE        0x50084000
 #define DWT_BASE           0xe0001000
 #define DWT_CTRL           0x00
@@ -106,8 +118,15 @@
 #define WDT_CMD_START      0x76
 #define WDT_SR_ACTIVE      (1U << 1)
 #define DMAC_CCR_EN        (1U << 0)
+#define DMAC_CCR_TCIE      (1U << 1)
+#define DMAC_CCR_HTIE      (1U << 2)
+#define DMAC_CCR_CIRC      (1U << 5)
+#define DMAC_CCR_MINC      (1U << 7)
 #define DMAC_ISR_GIF2      (1U << 4)
 #define DMAC_ISR_TCIF2     (1U << 5)
+#define DMAC_ISR_GIF5      (1U << 16)
+#define DMAC_ISR_TCIF5     (1U << 17)
+#define DMAC_ISR_HTIF5     (1U << 18)
 #define I2C_CR_RSTREQ      (1U << 30)
 #define I2C_TCR_TB         (1U << 0)
 #define I2C_TCR_START      (1U << 1)
@@ -336,6 +355,36 @@ static void test_dmac1_channel2(void)
     qtest_quit(qts);
 }
 
+static void test_audio_dma(void)
+{
+    QTestState *qts = sf32lb52_start();
+    uint8_t samples[16];
+
+    qtest_memset(qts, HPSYS_RAM_BASE, 0xff, sizeof(samples));
+    qtest_writel(qts, DMAC1_CNDTR5, 8);
+    qtest_writel(qts, DMAC1_CPAR5, PDM1_DATA_L);
+    qtest_writel(qts, DMAC1_CM0AR5, HPSYS_RAM_BASE);
+    qtest_writel(qts, DMAC1_CCR5,
+                 DMAC_CCR_EN | DMAC_CCR_TCIE | DMAC_CCR_HTIE |
+                 DMAC_CCR_CIRC | DMAC_CCR_MINC);
+    qtest_clock_step(qts, G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_ISR) &
+                    (DMAC_ISR_GIF5 | DMAC_ISR_HTIF5), ==,
+                    DMAC_ISR_GIF5 | DMAC_ISR_HTIF5);
+    qtest_memread(qts, HPSYS_RAM_BASE, samples, sizeof(samples));
+    g_assert_cmphex(samples[0], ==, 0x00);
+    g_assert_cmphex(samples[1], ==, 0xfc);
+    qtest_writel(qts, DMAC1_IFCR, DMAC_ISR_GIF5);
+    qtest_clock_step(qts, G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_ISR) &
+                    (DMAC_ISR_GIF5 | DMAC_ISR_TCIF5), ==,
+                    DMAC_ISR_GIF5 | DMAC_ISR_TCIF5);
+    g_assert_cmphex(qtest_readl(qts, DMAC1_CCR5) & DMAC_CCR_EN, ==,
+                    DMAC_CCR_EN);
+
+    qtest_quit(qts);
+}
+
 static void test_flash_program_and_erase(void)
 {
     QTestState *qts = sf32lb52_start();
@@ -496,6 +545,81 @@ static void i2c_write_register(QTestState *qts, uint32_t base,
     qtest_writel(qts, base + I2C_TCR, I2C_TCR_TB | I2C_TCR_STOP);
 }
 
+static void i2c_read_block(QTestState *qts, uint32_t base, uint8_t address,
+                           uint8_t reg, uint8_t *data, size_t length)
+{
+    qtest_writel(qts, base + I2C_DBR, address << 1);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_START | I2C_TCR_TB);
+    qtest_writel(qts, base + I2C_DBR, reg);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_TB);
+    qtest_writel(qts, base + I2C_DBR, (address << 1) | 1);
+    qtest_writel(qts, base + I2C_TCR, I2C_TCR_START | I2C_TCR_TB);
+    for (size_t i = 0; i < length; i++) {
+        qtest_writel(qts, base + I2C_TCR,
+                     I2C_TCR_TB | (i == length - 1 ? I2C_TCR_STOP : 0));
+        data[i] = qtest_readl(qts, base + I2C_DBR);
+    }
+}
+
+static void test_obelix_motion_samples(void)
+{
+    QTestState *qts = sf32lb52_start();
+    uint8_t samples[140];
+
+    i2c_write_register(qts, I2C2_BASE, 0x6a, 0x10, 0x30);
+    i2c_write_register(qts, I2C2_BASE, 0x6a, 0x07, 2);
+    i2c_write_register(qts, I2C2_BASE, 0x6a, 0x09, 3);
+    i2c_write_register(qts, I2C2_BASE, 0x6a, 0x0a, 6);
+    qtest_clock_step(qts, 390 * G_TIME_SPAN_MILLISECOND * 1000);
+    g_assert_cmphex(i2c_read_register(qts, I2C2_BASE, 0x6a, 0x3a), ==, 20);
+    g_assert_cmphex(i2c_read_register(qts, I2C2_BASE, 0x6a, 0x3b) & 0x80,
+                    ==, 0x80);
+    i2c_read_block(qts, I2C2_BASE, 0x6a, 0x78,
+                   samples, sizeof(samples));
+    g_assert_cmphex(samples[0], ==, 0x10);
+    g_assert_cmphex(samples[138], ==, 0x00);
+    g_assert_cmphex(samples[139], ==, 0x40);
+    g_assert_cmphex(i2c_read_register(qts, I2C2_BASE, 0x6a, 0x3a), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_lcpu_hci(void)
+{
+    QTestState *qts = sf32lb52_start();
+    const uint8_t reset[] = { 0x01, 0x03, 0x0c, 0x00 };
+    const uint8_t ready_event[] = {
+        0x04, 0x0e, 0x04, 0x01, 0x11, 0xfc, 0x00,
+    };
+    const uint8_t reset_event[] = {
+        0x04, 0x0e, 0x04, 0x01, 0x03, 0x0c, 0x00,
+    };
+    uint8_t event[7];
+
+    qtest_writel(qts, MAILBOX1_C1IER, 1);
+    g_assert_cmphex(qtest_readl(qts, MAILBOX2_C1MISR), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, LCPU2HCPU_RING + 12), ==, 7U << 16);
+    qtest_memread(qts, LCPU2HCPU_RING + IPC_RING_HEADER, event,
+                  sizeof(event));
+    g_assert_cmpmem(event, sizeof(event), ready_event, sizeof(ready_event));
+    qtest_writel(qts, MAILBOX2_C1ICR, 1);
+    qtest_writel(qts, LCPU2HCPU_RING + 8, 7U << 16);
+
+    qtest_writel(qts, HCPU2LCPU_RING + 8, 0);
+    qtest_writel(qts, HCPU2LCPU_RING + 12, sizeof(reset) << 16);
+    qtest_writew(qts, HCPU2LCPU_RING + 16, 512 - IPC_RING_HEADER);
+    qtest_memwrite(qts, HCPU2LCPU_RING + IPC_RING_HEADER,
+                   reset, sizeof(reset));
+    qtest_writel(qts, MAILBOX1_C1ITR, 1);
+
+    g_assert_cmphex(qtest_readl(qts, LCPU2HCPU_RING + 12), ==, 14U << 16);
+    qtest_memread(qts, LCPU2HCPU_RING + IPC_RING_HEADER + 7,
+                  event, sizeof(event));
+    g_assert_cmpmem(event, sizeof(event), reset_event, sizeof(reset_event));
+
+    qtest_quit(qts);
+}
+
 static void test_obelix_i2c_devices(void)
 {
     QTestState *qts = sf32lb52_start();
@@ -608,12 +732,16 @@ int main(int argc, char **argv)
     qtest_add_func("sf32lb52/rtc-low-power-timer",
                    test_rtc_and_low_power_timer);
     qtest_add_func("sf32lb52/dmac1-channel2", test_dmac1_channel2);
+    qtest_add_func("sf32lb52/audio-dma", test_audio_dma);
     qtest_add_func("sf32lb52/flash-program-erase",
                    test_flash_program_and_erase);
     qtest_add_func("sf32lb52/flash-backing", test_flash_backing);
     qtest_add_func("sf32lb52/lcdc-jdi", test_lcdc_jdi);
     qtest_add_func("sf32lb52/i2c1", test_i2c1);
     qtest_add_func("sf32lb52/obelix-i2c-devices", test_obelix_i2c_devices);
+    qtest_add_func("sf32lb52/obelix-motion-samples",
+                   test_obelix_motion_samples);
+    qtest_add_func("sf32lb52/lcpu-hci", test_lcpu_hci);
     qtest_add_func("sf32lb52/obelix-buttons", test_obelix_buttons);
     qtest_add_func("sf32lb52/obelix-touch", test_obelix_touch);
     qtest_add_func("sf32lb52/usart1", test_usart1);

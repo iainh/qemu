@@ -25,11 +25,15 @@ The machine provides:
 - 4 KiB sector and 32/64 KiB block erase commands
 - LCDC1 JDI transfers to the 200x228 RGB332 Obelix display
 - Obelix buttons through GPIO1 and touchscreen events through the CST816
+- circular speaker and microphone DMA with generated microphone samples
+- generated stationary LSM6DSO FIFO samples and watermark interrupts
+- an HCPU/LCPU mailbox transport with a minimal Bluetooth LE HCI controller
 - USART1 connected to the first QEMU serial backend
 
-The LCPU, Bluetooth, DMA data movement outside MPI flash and LCDC writes, and
-most peripherals are not implemented. Unimplemented peripheral registers
-retain their values to support incremental firmware bring-up.
+Bluetooth radio links, host audio input/output, DMA data movement outside the
+modelled flash and audio paths, and most peripherals are not implemented.
+Unimplemented peripheral registers retain their values to support incremental
+firmware bring-up.
 
 Booting PebbleOS
 ----------------
