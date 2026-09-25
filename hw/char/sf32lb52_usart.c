@@ -129,7 +129,7 @@ static const MemoryRegionOps sf32lb52_usart_ops = {
     .read = sf32lb52_usart_read,
     .write = sf32lb52_usart_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 4,
+    .valid.min_access_size = 1,
     .valid.max_access_size = 4,
 };
 
